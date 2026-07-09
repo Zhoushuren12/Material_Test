@@ -1,0 +1,17 @@
+solver:
+  executable_path: ../../OpenSees.exe
+  tcl_library_path: ../../lib/tcl8.6
+  timeout: 300
+material_template: ../materials/figure_1_selfcentering.yaml
+loading:
+  history:
+    path: ../data/figure_1_experiment.txt
+    displacement_column: 0
+    append_zero: true
+experiment:
+  path: ../data/figure_1_experiment.txt
+  displacement_column: 0
+  force_column: 1
+output_dir: ../../outputs/runs
+area: 1.0
+length: 1.0

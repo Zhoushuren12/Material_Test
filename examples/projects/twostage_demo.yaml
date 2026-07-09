@@ -1,0 +1,35 @@
+solver:
+  executable_path: ../../OpenSees.exe
+  tcl_library_path: ../../lib/tcl8.6
+  timeout: 120
+material_template: ../materials/twostage.yaml
+loading:
+  amplitudes:
+    - 0.0
+    - 8.0
+    - -8.0
+    - 12.0
+    - -12.0
+    - 16.0
+    - -16.0
+    - 20.0
+    - -20.0
+    - 25.0
+    - -25.0
+    - 30.0
+    - -30.0
+    - 40.0
+    - -40.0
+    - 55.0
+    - -55.0
+    - 80.0
+    - -80.0
+    - 0.0
+  du: 0.25
+experiment:
+  path: ../data/twostage_experiment_sample.csv
+  displacement_column: displacement
+  force_column: force
+output_dir: ../../outputs/runs
+area: 1.0
+length: 1.0

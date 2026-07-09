@@ -1,0 +1,14 @@
+name: SeriesElastic
+description: Example composite material using OpenSees Series with two Elastic sub-materials.
+command: |
+  uniaxialMaterial Elastic 101 {k1}
+  uniaxialMaterial Elastic 102 {k2}
+  uniaxialMaterial Series {tag} 101 102
+tag: 1
+parameters:
+  - name: k1
+    value: 100.0
+    min: 0.0
+  - name: k2
+    value: 50.0
+    min: 0.0
