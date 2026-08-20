@@ -1,6 +1,6 @@
 # Material Test
 
-Python-first OpenSees material testing and manual fitting tool.
+Python-first OpenSees material testing and material-parameter fitting tool.
 
 The first version supports a practical manual-fitting loop:
 
@@ -12,7 +12,7 @@ The first version supports a practical manual-fitting loop:
 6. Run OpenSees through Python.
 7. Overlay experiment and simulation curves for manual judgment.
 
-Automatic optimization, batch parameter studies, and automatic custom-material discovery are intentionally out of scope for the first version.
+The program supports automatic fitting with differential evolution (DE) or particle swarm optimization (PSO), followed by optional robust least-squares refinement. Batch studies and automatic custom-material discovery remain out of scope.
 
 ## Setup
 
@@ -41,6 +41,41 @@ The retained `Figure_1.png` legacy case from `Material_Test - 2` can be run with
 ```powershell
 python -m material_test.cli run examples\projects\figure_1_selfcentering.yaml
 ```
+
+## Automatic Parameter Fitting
+
+The `fit` command always uses the experimental displacement history as the OpenSees input path. This preserves loading and unloading order, which is essential for fitting hysteretic material response.
+
+```powershell
+python -m material_test.cli fit examples\projects\twostage_fit.yaml
+```
+
+The fitting section explicitly selects parameters and finite physical bounds:
+
+```yaml
+fitting:
+  algorithm: de       # de (default) or pso
+  max_evaluations: 240
+  population_size: 16
+  local_refine: true
+  local_max_evaluations: 120
+  loss: soft_l1
+  seed: 42
+  parameters:
+    - name: k1
+      min: 1000.0
+      max: 20000.0
+      scale: log       # optional: linear (default) or log
+    - name: sigAct
+      min: 1000.0
+      max: 50000.0
+```
+
+`DE + local refinement` is the default high-accuracy workflow. Use `PSO + local refinement` when reproducing PSO-based studies or when its search behavior is preferred. Each fit writes `fitted_material.yaml`, `fit_summary.json`, `simulation_curve.csv`, and `fit_overlay.png` to its output directory.
+
+The bundled `twostage_fit.yaml` is an executable workflow example. Its small sample dataset is not intended as a high-fidelity calibration dataset; use a complete displacement-force sequence recorded in loading order for engineering parameter identification.
+
+In the desktop UI, choose the global algorithm in **Parameter Fitting**, check the parameters to fit in the material table, and provide both Min and Max values. The normal **Run** action remains available for checking a single parameter set.
 
 ## UI
 

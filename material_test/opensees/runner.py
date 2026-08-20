@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from material_test.domain import MaterialTemplate, SimulationResult, SolverConfig
+from material_test.domain import MaterialTemplate, ModelingConfig, SimulationResult, SolverConfig
 from material_test.opensees.tcl_writer import write_material_test_tcl
 
 
@@ -18,6 +18,7 @@ def run_material_history(
     work_dir: Path,
     area: float = 1.0,
     length: float = 1.0,
+    modeling: ModelingConfig | None = None,
 ) -> SimulationResult:
     """Run a material test with a configured OpenSees executable."""
     executable = solver.executable_path.resolve()
@@ -45,6 +46,8 @@ def run_material_history(
     # Path time series advances after each analysis step; append one stable value
     # while the Tcl loop records the current state before each step.
     np.savetxt(history_file, np.r_[history, history[-1]], fmt="%.12g")
+    modeling = modeling or ModelingConfig()
+    modeling.validate()
     write_material_test_tcl(
         tcl_file=tcl_file,
         history_file=history_file,
@@ -54,6 +57,8 @@ def run_material_history(
         area=area,
         length=length,
         test_material_tag=material.tag,
+        topology=modeling.topology,
+        material_tags=modeling.material_tags,
     )
 
     env = os.environ.copy()

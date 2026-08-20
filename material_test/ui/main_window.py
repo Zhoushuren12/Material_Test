@@ -32,12 +32,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from material_test.domain import LoadingProtocol, MaterialTemplate, ParameterSpec, ProjectConfig, SolverConfig
+from material_test.domain import (
+    FitConfig,
+    FitParameterSpec,
+    LoadingProtocol,
+    MaterialTemplate,
+    ModelingConfig,
+    ParameterSpec,
+    ProjectConfig,
+    SolverConfig,
+)
+from material_test.fitting import FitResult
 from material_test.io.experiment_data import list_data_columns
 from material_test.io.material_templates import load_material_template
 from material_test.io.project_config import load_project_config, save_project_config
 from material_test.ui.plot_canvas import OverlayPlotWidget
-from material_test.ui.workers import RunWorker
+from material_test.ui.workers import FitWorker, RunWorker
 from material_test.workflow import WorkflowResult
 
 
@@ -53,9 +63,9 @@ class MainWindow(QMainWindow):
         self.resize(1280, 820)
 
         self.current_template_path: Path | None = None
-        self.current_result: WorkflowResult | None = None
+        self.current_result: WorkflowResult | FitResult | None = None
         self._thread: QThread | None = None
-        self._worker: RunWorker | None = None
+        self._worker: RunWorker | FitWorker | None = None
 
         self._build_actions()
         self._build_ui()
@@ -79,13 +89,8 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(8, 8, 8, 8)
         self.plot_widget = OverlayPlotWidget()
-        self.log_edit = QPlainTextEdit()
-        self.log_edit.setReadOnly(True)
-        self.log_edit.setMaximumBlockCount(2000)
-        self.log_edit.setPlaceholderText("Run log")
-        self.log_edit.setMinimumHeight(150)
         right_layout.addWidget(self.plot_widget, stretch=4)
-        right_layout.addWidget(self.log_edit, stretch=1)
+        right_layout.addWidget(self._build_log_panel(), stretch=1)
         splitter.addWidget(right)
         splitter.setSizes([430, 850])
 
@@ -106,11 +111,17 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_material_section())
         layout.addWidget(self._build_protocol_section())
         layout.addWidget(self._build_experiment_section())
+        layout.addWidget(self._build_fitting_section())
 
         self.run_button = QPushButton("Run")
         self.run_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.run_button.clicked.connect(self.start_run)
         self.run_button.setMinimumHeight(34)
+
+        self.fit_button = QPushButton("Fit")
+        self.fit_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        self.fit_button.clicked.connect(self.start_fit)
+        self.fit_button.setMinimumHeight(34)
 
         self.export_button = QPushButton("Export Figure")
         self.export_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
@@ -119,12 +130,36 @@ class MainWindow(QMainWindow):
 
         action_row = QHBoxLayout()
         action_row.addWidget(self.run_button)
+        action_row.addWidget(self.fit_button)
         action_row.addWidget(self.export_button)
         layout.addLayout(action_row)
         layout.addStretch(1)
 
         scroll.setWidget(panel)
         return scroll
+
+    def _build_log_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        header = QHBoxLayout()
+        header.addWidget(QLabel("Run Log"))
+        header.addStretch(1)
+        clear_button = QToolButton()
+        clear_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
+        clear_button.setToolTip("Clear run log")
+        clear_button.clicked.connect(self.clear_log)
+        header.addWidget(clear_button)
+
+        self.log_edit = QPlainTextEdit()
+        self.log_edit.setReadOnly(True)
+        self.log_edit.setMaximumBlockCount(2000)
+        self.log_edit.setPlaceholderText("Run log")
+        self.log_edit.setMinimumHeight(150)
+        layout.addLayout(header)
+        layout.addWidget(self.log_edit)
+        return panel
 
     def _build_project_section(self) -> QGroupBox:
         group = QGroupBox("Project")
@@ -170,14 +205,30 @@ class MainWindow(QMainWindow):
         self.material_name_edit = QLineEdit()
         self.material_tag_spin = QSpinBox()
         self.material_tag_spin.setRange(1, 999999)
-        self.material_command_edit = QLineEdit()
+        self.material_command_edit = QPlainTextEdit()
+        self.material_command_edit.setMaximumHeight(88)
+        self.model_topology_combo = QComboBox()
+        self.model_topology_combo.addItem("Single material", "single")
+        self.model_topology_combo.addItem("Explicit series", "series")
+        self.model_topology_combo.addItem("Explicit parallel", "parallel")
+        self.model_topology_combo.setToolTip(
+            "Explicit modes connect Truss elements directly and do not use "
+            "OpenSees uniaxialMaterial Series or Parallel."
+        )
+        self.model_topology_combo.currentIndexChanged.connect(self._update_modeling_controls)
+        self.model_tags_edit = QLineEdit()
+        self.model_tags_edit.setPlaceholderText("e.g. 101, 102")
+        self.model_tags_edit.setToolTip("Material tags defined by the commands above, in connection order.")
         form.addRow("Name", self.material_name_edit)
         form.addRow("Tag", self.material_tag_spin)
-        form.addRow("Command", self.material_command_edit)
+        form.addRow("Commands", self.material_command_edit)
+        form.addRow("Test model", self.model_topology_combo)
+        form.addRow("Material tags", self.model_tags_edit)
         layout.addLayout(form)
+        self._update_modeling_controls()
 
-        self.param_table = QTableWidget(0, 4)
-        self.param_table.setHorizontalHeaderLabels(["Name", "Value", "Min", "Max"])
+        self.param_table = QTableWidget(0, 6)
+        self.param_table.setHorizontalHeaderLabels(["Name", "Value", "Min", "Max", "Fit", "Scale"])
         self.param_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.param_table.verticalHeader().setVisible(False)
         self.param_table.setMinimumHeight(180)
@@ -221,6 +272,31 @@ class MainWindow(QMainWindow):
         form.addRow("Data file", self._path_row(self.experiment_path_edit, self.browse_experiment_data, file_mode=True))
         form.addRow("Displacement", self.displacement_combo)
         form.addRow("Force", self.force_combo)
+        return group
+
+    def _build_fitting_section(self) -> QGroupBox:
+        group = QGroupBox("Parameter Fitting")
+        form = QFormLayout(group)
+        self.fit_algorithm_combo = QComboBox()
+        self.fit_algorithm_combo.addItem("Differential evolution", "de")
+        self.fit_algorithm_combo.addItem("Particle swarm", "pso")
+        self.fit_max_evaluations_spin = QSpinBox()
+        self.fit_max_evaluations_spin.setRange(8, 100000)
+        self.fit_max_evaluations_spin.setValue(240)
+        self.fit_population_spin = QSpinBox()
+        self.fit_population_spin.setRange(2, 1000)
+        self.fit_population_spin.setValue(16)
+        self.fit_local_refine_check = QCheckBox("Local least-squares refinement")
+        self.fit_local_refine_check.setChecked(True)
+        self.fit_local_evaluations_spin = QSpinBox()
+        self.fit_local_evaluations_spin.setRange(1, 100000)
+        self.fit_local_evaluations_spin.setValue(120)
+
+        form.addRow("Global algorithm", self.fit_algorithm_combo)
+        form.addRow("Global evaluations", self.fit_max_evaluations_spin)
+        form.addRow("Population", self.fit_population_spin)
+        form.addRow("", self.fit_local_refine_check)
+        form.addRow("Local evaluations", self.fit_local_evaluations_spin)
         return group
 
     def _path_row(self, edit: QLineEdit, callback, *, file_mode: bool) -> QHBoxLayout:
@@ -317,6 +393,7 @@ class MainWindow(QMainWindow):
             return
 
         self.run_button.setEnabled(False)
+        self.fit_button.setEnabled(False)
         self.export_button.setEnabled(False)
         self.statusBar().showMessage("Running OpenSees...")
         self._append_log("Starting simulation...")
@@ -335,6 +412,33 @@ class MainWindow(QMainWindow):
         self._thread.finished.connect(self._thread_finished)
         self._thread.start()
 
+    def start_fit(self) -> None:
+        try:
+            config = self._config_from_ui(require_fitting=True)
+        except Exception as exc:
+            QMessageBox.critical(self, "Fit", str(exc))
+            return
+
+        self.run_button.setEnabled(False)
+        self.fit_button.setEnabled(False)
+        self.export_button.setEnabled(False)
+        self.statusBar().showMessage("Fitting material parameters...")
+        self._append_log("Starting parameter fit...")
+
+        self._thread = QThread(self)
+        self._worker = FitWorker(config)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.finished.connect(self._fit_finished)
+        self._worker.failed.connect(self._run_failed)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.failed.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._thread_finished)
+        self._thread.start()
+
     def export_figure(self) -> None:
         if self.current_result is None:
             QMessageBox.information(self, "Export Figure", "No run result is available.")
@@ -344,6 +448,10 @@ class MainWindow(QMainWindow):
             return
         self.plot_widget.save_png(path)
         self._append_log(f"Exported figure: {path}")
+
+    def clear_log(self) -> None:
+        self.log_edit.clear()
+        self.statusBar().showMessage("Run log cleared")
 
     def remove_selected_parameter(self) -> None:
         rows = sorted({index.row() for index in self.param_table.selectedIndexes()}, reverse=True)
@@ -364,13 +472,27 @@ class MainWindow(QMainWindow):
             self._append_log(result.simulation.stderr.strip())
         self.statusBar().showMessage("Run completed")
 
+    def _fit_finished(self, result: FitResult) -> None:
+        self.current_result = result
+        self.plot_widget.update_curves(result.simulation, result.experiment)
+        self.export_button.setEnabled(True)
+        self._append_log(f"Completed fit: {result.run_dir}")
+        self._append_log(
+            f"Algorithm: {result.global_algorithm}; evaluations: {result.global_evaluations} global, "
+            f"{result.local_evaluations} local"
+        )
+        self._append_log(f"Normalized RMSE: {result.metrics.normalized_rmse:.6g}")
+        self._append_log(f"Fitted material: {result.material_file}")
+        self.statusBar().showMessage("Fit completed")
+
     def _run_failed(self, message: str) -> None:
         self._append_log(message)
-        QMessageBox.critical(self, "OpenSees Run Failed", message)
+        QMessageBox.critical(self, "Run Failed", message)
         self.statusBar().showMessage("Run failed")
 
     def _thread_finished(self) -> None:
         self.run_button.setEnabled(True)
+        self.fit_button.setEnabled(True)
         self._thread = None
         self._worker = None
 
@@ -389,6 +511,8 @@ class MainWindow(QMainWindow):
         self.current_template_path = config.material_template_path
         self.template_path_edit.setText(str(config.material_template_path or ""))
         self._populate_material(config.material)
+        self._populate_modeling(config.modeling)
+        self._populate_fitting(config.fitting)
 
         self.amplitudes_edit.setPlainText(", ".join(f"{value:g}" for value in config.loading.amplitudes))
         self.du_spin.setValue(float(config.loading.du))
@@ -407,18 +531,32 @@ class MainWindow(QMainWindow):
     def _populate_material(self, template: MaterialTemplate) -> None:
         self.material_name_edit.setText(template.name)
         self.material_tag_spin.setValue(template.tag)
-        self.material_command_edit.setText(template.command)
+        self.material_command_edit.setPlainText(template.command)
         self.param_table.setRowCount(0)
         for parameter in template.parameters:
             self._append_parameter_row(parameter)
 
-    def _append_parameter_row(self, parameter: ParameterSpec) -> None:
+    def _populate_modeling(self, modeling: ModelingConfig) -> None:
+        self._select_combo_data(self.model_topology_combo, modeling.topology)
+        self.model_tags_edit.setText(", ".join(str(tag) for tag in modeling.material_tags))
+        self._update_modeling_controls()
+
+    def _append_parameter_row(self, parameter: ParameterSpec, *, selected_for_fit: bool = False, scale: str = "linear") -> None:
         row = self.param_table.rowCount()
         self.param_table.insertRow(row)
         self.param_table.setItem(row, 0, QTableWidgetItem(parameter.name))
         self.param_table.setItem(row, 1, QTableWidgetItem(f"{parameter.value:g}"))
         self.param_table.setItem(row, 2, QTableWidgetItem("" if parameter.min is None else f"{parameter.min:g}"))
         self.param_table.setItem(row, 3, QTableWidgetItem("" if parameter.max is None else f"{parameter.max:g}"))
+        selected = QTableWidgetItem()
+        selected.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+        selected.setCheckState(Qt.CheckState.Checked if selected_for_fit else Qt.CheckState.Unchecked)
+        self.param_table.setItem(row, 4, selected)
+        scale_combo = QComboBox()
+        scale_combo.addItem("Linear", "linear")
+        scale_combo.addItem("Log", "log")
+        self._select_combo_data(scale_combo, scale)
+        self.param_table.setCellWidget(row, 5, scale_combo)
 
     def _load_experiment_columns(self, path: Path) -> None:
         self._load_columns(path, self.displacement_combo, self.force_combo)
@@ -439,7 +577,7 @@ class MainWindow(QMainWindow):
             combo.clear()
             combo.addItems(columns)
 
-    def _config_from_ui(self) -> ProjectConfig:
+    def _config_from_ui(self, *, require_fitting: bool = False) -> ProjectConfig:
         solver_text = self.solver_path_edit.text().strip()
         if not solver_text:
             raise ValueError("OpenSees executable path is required")
@@ -461,19 +599,27 @@ class MainWindow(QMainWindow):
         else:
             loading = LoadingProtocol(amplitudes=self._parse_amplitudes(), du=float(self.du_spin.value()))
 
+        material = self._material_from_ui()
+        modeling = self._modeling_from_ui()
+        fitting = self._fitting_from_ui(material)
+        if require_fitting and fitting is None:
+            raise ValueError("select at least one material parameter for fitting")
+
         return ProjectConfig(
             solver=SolverConfig(
                 executable_path=solver_path,
                 tcl_library_path=Path(tcl_text) if tcl_text else None,
                 timeout=float(self.timeout_spin.value()),
             ),
-            material=self._material_from_ui(),
+            material=material,
             loading=loading,
             experiment_path=experiment_path,
             displacement_column=displacement_column,
             force_column=force_column,
             output_dir=ROOT / "outputs" / "runs",
             material_template_path=self.current_template_path,
+            fitting=fitting,
+            modeling=modeling,
         )
 
     def _material_from_ui(self) -> MaterialTemplate:
@@ -496,10 +642,80 @@ class MainWindow(QMainWindow):
             )
         return MaterialTemplate(
             name=self.material_name_edit.text().strip() or "Material",
-            command=self.material_command_edit.text().strip(),
+            command=self.material_command_edit.toPlainText().strip(),
             tag=int(self.material_tag_spin.value()),
             parameters=parameters,
         )
+
+    def _modeling_from_ui(self) -> ModelingConfig:
+        topology = str(self.model_topology_combo.currentData())
+        tags: list[int] = []
+        if topology != "single":
+            values = [item for item in re.split(r"[\s,;]+", self.model_tags_edit.text().strip()) if item]
+            try:
+                tags = [int(value) for value in values]
+            except ValueError as exc:
+                raise ValueError("explicit model material tags must be integers") from exc
+        modeling = ModelingConfig(topology=topology, material_tags=tags)
+        modeling.validate()
+        return modeling
+
+    def _update_modeling_controls(self) -> None:
+        explicit = self.model_topology_combo.currentData() != "single"
+        self.model_tags_edit.setEnabled(explicit)
+
+    def _fitting_from_ui(self, material: MaterialTemplate) -> FitConfig | None:
+        selected: list[FitParameterSpec] = []
+        for row, parameter in enumerate(material.parameters):
+            item = self.param_table.item(row, 4)
+            if item is None or item.checkState() != Qt.CheckState.Checked:
+                continue
+            if parameter.min is None or parameter.max is None:
+                raise ValueError(f"fitted parameter {parameter.name!r} requires finite Min and Max values")
+            scale_combo = self.param_table.cellWidget(row, 5)
+            scale = scale_combo.currentData() if isinstance(scale_combo, QComboBox) else "linear"
+            selected.append(FitParameterSpec(parameter.name, parameter.min, parameter.max, str(scale)))
+        if not selected:
+            return None
+        return FitConfig(
+            parameters=selected,
+            algorithm=str(self.fit_algorithm_combo.currentData()),
+            max_evaluations=int(self.fit_max_evaluations_spin.value()),
+            population_size=int(self.fit_population_spin.value()),
+            local_refine=self.fit_local_refine_check.isChecked(),
+            local_max_evaluations=int(self.fit_local_evaluations_spin.value()),
+        )
+
+    def _populate_fitting(self, fitting: FitConfig | None) -> None:
+        for row in range(self.param_table.rowCount()):
+            item = self.param_table.item(row, 4)
+            if item is not None:
+                item.setCheckState(Qt.CheckState.Unchecked)
+        if fitting is None:
+            return
+        self._select_combo_data(self.fit_algorithm_combo, fitting.algorithm)
+        self.fit_max_evaluations_spin.setValue(fitting.max_evaluations)
+        self.fit_population_spin.setValue(fitting.population_size)
+        self.fit_local_refine_check.setChecked(fitting.local_refine)
+        self.fit_local_evaluations_spin.setValue(fitting.local_max_evaluations)
+        selected = {parameter.name: parameter for parameter in fitting.parameters}
+        for row in range(self.param_table.rowCount()):
+            name = self._table_text(row, 0)
+            spec = selected.get(name)
+            if spec is None:
+                continue
+            item = self.param_table.item(row, 4)
+            if item is not None:
+                item.setCheckState(Qt.CheckState.Checked)
+            min_item = self.param_table.item(row, 2)
+            max_item = self.param_table.item(row, 3)
+            if min_item is not None:
+                min_item.setText(f"{spec.min:g}")
+            if max_item is not None:
+                max_item.setText(f"{spec.max:g}")
+            scale_combo = self.param_table.cellWidget(row, 5)
+            if isinstance(scale_combo, QComboBox):
+                self._select_combo_data(scale_combo, spec.scale)
 
     def _parse_amplitudes(self) -> list[float]:
         text = self.amplitudes_edit.toPlainText().strip()
@@ -524,6 +740,12 @@ class MainWindow(QMainWindow):
         if value is None:
             return
         index = combo.findText(str(value))
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    @staticmethod
+    def _select_combo_data(combo: QComboBox, value: str) -> None:
+        index = combo.findData(value)
         if index >= 0:
             combo.setCurrentIndex(index)
 

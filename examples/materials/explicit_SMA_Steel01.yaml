@@ -1,0 +1,34 @@
+name: ExplicitSMA_Steel01
+description: SMA and Steel01 child materials for explicit element-level series or parallel modeling.
+command: |
+  uniaxialMaterial SMA 101 {E_SMA} {eps_L} {sig_AM_s} {sig_AM_f} {sig_MA_s} {sig_MA_f}
+  uniaxialMaterial Steel01 102 {Fy} {E_Steel} {b}
+tag: 1
+parameters:
+  - name: E_SMA
+    value: 1100
+    min: 0.0
+  - name: eps_L
+    value: 9
+    min: 0.0
+  - name: sig_AM_s
+    value: 2500
+    min: 0.0
+  - name: sig_AM_f
+    value: 3100
+    min: 0.0
+  - name: sig_MA_s
+    value: 1900
+    min: 0.0
+  - name: sig_MA_f
+    value: 1200
+    min: 0.0
+  - name: Fy
+    value: 3150
+    min: 0.0
+  - name: E_Steel
+    value: 1e4
+    min: 0.0
+  - name: b
+    value: 1e-4
+    min: 0.0

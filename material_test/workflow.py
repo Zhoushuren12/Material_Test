@@ -36,6 +36,7 @@ def run_project(config: ProjectConfig, *, run_dir: Path | None = None) -> Workfl
         work_dir=run_dir,
         area=config.area,
         length=config.length,
+        modeling=config.modeling,
     )
 
     simulation_csv = run_dir / "simulation_curve.csv"

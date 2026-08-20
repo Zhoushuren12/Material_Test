@@ -1,0 +1,25 @@
+name: SMA
+description: Example composite material using OpenSees Series with two sub-materials. 
+command: |
+  uniaxialMaterial SMA {tag} {E_SMA} {eps_L} {sig_AM_s} {sig_AM_f} {sig_MA_s} {sig_MA_f}
+
+tag: 1
+parameters:
+  - name: E_SMA
+    value: 1100
+    min: 0.0
+  - name: eps_L
+    value: 9
+    min: 0.0
+  - name: sig_AM_s
+    value: 2500
+    min: 0.0
+  - name: sig_AM_f
+    value: 3100
+    min: 0.0
+  - name: sig_MA_s
+    value: 1900
+    min: 0.0
+  - name: sig_MA_f
+    value: 1200
+    min: 0.0

@@ -5,7 +5,7 @@ from typing import Any
 
 import yaml
 
-from material_test.domain import LoadingProtocol, ProjectConfig, SolverConfig
+from material_test.domain import FitConfig, LoadingProtocol, ModelingConfig, ProjectConfig, SolverConfig
 from material_test.io.material_templates import load_material_template, material_template_from_mapping
 
 
@@ -44,6 +44,20 @@ def load_project_config(path: str | Path) -> ProjectConfig:
     if not isinstance(experiment, dict):
         raise ValueError("experiment must be a mapping when provided")
 
+    fitting_data = data.get("fitting")
+    if fitting_data is not None and not isinstance(fitting_data, dict):
+        raise ValueError("fitting must be a mapping when provided")
+    fitting = FitConfig.from_mapping(fitting_data) if fitting_data else None
+    if fitting:
+        material_parameters = material.parameter_values
+        missing = [parameter.name for parameter in fitting.parameters if parameter.name not in material_parameters]
+        if missing:
+            raise ValueError(f"fitting parameters are not defined by the material: {', '.join(missing)}")
+
+    modeling_data = data.get("modeling")
+    if modeling_data is not None and not isinstance(modeling_data, dict):
+        raise ValueError("modeling must be a mapping when provided")
+
     return ProjectConfig(
         solver=solver,
         material=material,
@@ -56,6 +70,8 @@ def load_project_config(path: str | Path) -> ProjectConfig:
         material_template_path=material_template_path,
         area=float(data.get("area", 1.0)),
         length=float(data.get("length", 1.0)),
+        fitting=fitting,
+        modeling=ModelingConfig.from_mapping(modeling_data),
     )
 
 
@@ -74,6 +90,7 @@ def save_project_config(config: ProjectConfig, path: str | Path) -> None:
         "output_dir": str(config.output_dir),
         "area": config.area,
         "length": config.length,
+        "modeling": config.modeling.to_mapping(),
     }
     if config.material_template_path:
         data["material_template"] = str(config.material_template_path)
@@ -82,6 +99,8 @@ def save_project_config(config: ProjectConfig, path: str | Path) -> None:
         }
     else:
         data["material"] = config.material.to_mapping()
+    if config.fitting:
+        data["fitting"] = config.fitting.to_mapping()
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
 

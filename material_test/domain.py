@@ -236,6 +236,108 @@ class SimulationResult:
 
 
 @dataclass
+class FitParameterSpec:
+    """A bounded material parameter selected for automatic fitting."""
+
+    name: str
+    min: float
+    max: float
+    scale: str = "linear"
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> "FitParameterSpec":
+        if "name" not in data or "min" not in data or "max" not in data:
+            raise ValueError("fitting.parameters entries require name, min, and max")
+        spec = cls(
+            name=str(data["name"]),
+            min=float(data["min"]),
+            max=float(data["max"]),
+            scale=str(data.get("scale", "linear")).lower(),
+        )
+        spec.validate()
+        return spec
+
+    def validate(self) -> None:
+        if not np.isfinite(self.min) or not np.isfinite(self.max) or self.min >= self.max:
+            raise ValueError(f"fitting bounds for {self.name!r} must be finite and min < max")
+        if self.scale not in {"linear", "log"}:
+            raise ValueError(f"fitting scale for {self.name!r} must be 'linear' or 'log'")
+        if self.scale == "log" and self.min <= 0:
+            raise ValueError(f"log-scaled fitting parameter {self.name!r} requires min > 0")
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {"name": self.name, "min": self.min, "max": self.max, "scale": self.scale}
+
+
+@dataclass
+class FitConfig:
+    """Controls a global material-parameter search and optional local refinement."""
+
+    parameters: list[FitParameterSpec]
+    algorithm: str = "de"
+    max_evaluations: int = 240
+    population_size: int = 16
+    local_refine: bool = True
+    local_max_evaluations: int = 120
+    loss: str = "soft_l1"
+    f_scale: float = 1.0
+    seed: int | None = None
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> "FitConfig":
+        parameters_data = data.get("parameters", [])
+        if not isinstance(parameters_data, list):
+            raise ValueError("fitting.parameters must be a list")
+        config = cls(
+            parameters=[FitParameterSpec.from_mapping(item) for item in parameters_data],
+            algorithm=str(data.get("algorithm", "de")).lower(),
+            max_evaluations=int(data.get("max_evaluations", 240)),
+            population_size=int(data.get("population_size", 16)),
+            local_refine=bool(data.get("local_refine", True)),
+            local_max_evaluations=int(data.get("local_max_evaluations", 120)),
+            loss=str(data.get("loss", "soft_l1")),
+            f_scale=float(data.get("f_scale", 1.0)),
+            seed=int(data["seed"]) if data.get("seed") is not None else None,
+        )
+        config.validate()
+        return config
+
+    def validate(self) -> None:
+        names = [parameter.name for parameter in self.parameters]
+        if not names:
+            raise ValueError("fitting requires at least one selected parameter")
+        if len(set(names)) != len(names):
+            raise ValueError("fitting parameters must not contain duplicates")
+        if self.algorithm not in {"de", "pso"}:
+            raise ValueError("fitting.algorithm must be 'de' or 'pso'")
+        if self.max_evaluations < 4:
+            raise ValueError("fitting.max_evaluations must be at least 4")
+        if self.population_size < 2:
+            raise ValueError("fitting.population_size must be at least 2")
+        if self.local_max_evaluations < 1:
+            raise ValueError("fitting.local_max_evaluations must be positive")
+        if self.loss not in {"linear", "soft_l1", "huber", "cauchy", "arctan"}:
+            raise ValueError("fitting.loss is not supported by scipy.optimize.least_squares")
+        if self.f_scale <= 0:
+            raise ValueError("fitting.f_scale must be positive")
+        for parameter in self.parameters:
+            parameter.validate()
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "algorithm": self.algorithm,
+            "parameters": [parameter.to_mapping() for parameter in self.parameters],
+            "max_evaluations": self.max_evaluations,
+            "population_size": self.population_size,
+            "local_refine": self.local_refine,
+            "local_max_evaluations": self.local_max_evaluations,
+            "loss": self.loss,
+            "f_scale": self.f_scale,
+            "seed": self.seed,
+        }
+
+
+@dataclass
 class ProjectConfig:
     solver: SolverConfig
     material: MaterialTemplate
@@ -248,6 +350,42 @@ class ProjectConfig:
     material_template_path: Path | None = None
     area: float = 1.0
     length: float = 1.0
+    fitting: FitConfig | None = None
+    modeling: ModelingConfig = field(default_factory=lambda: ModelingConfig())
+
+
+@dataclass
+class ModelingConfig:
+    """Controls how material tags are connected in the OpenSees test model."""
+
+    topology: str = "single"
+    material_tags: list[int] = field(default_factory=list)
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> "ModelingConfig":
+        data = data or {}
+        config = cls(
+            topology=str(data.get("topology", "single")).lower(),
+            material_tags=[int(tag) for tag in data.get("material_tags", [])],
+        )
+        config.validate()
+        return config
+
+    def validate(self) -> None:
+        if self.topology not in {"single", "series", "parallel"}:
+            raise ValueError("modeling.topology must be 'single', 'series', or 'parallel'")
+        if any(tag <= 0 for tag in self.material_tags):
+            raise ValueError("modeling.material_tags must contain positive integers")
+        if len(set(self.material_tags)) != len(self.material_tags):
+            raise ValueError("modeling.material_tags must not contain duplicates")
+        if self.topology != "single" and len(self.material_tags) < 2:
+            raise ValueError(f"explicit {self.topology} modeling requires at least two material tags")
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "topology": self.topology,
+            "material_tags": list(self.material_tags),
+        }
 
 
 def _optional_float(value: Any) -> float | None:

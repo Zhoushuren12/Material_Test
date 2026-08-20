@@ -15,6 +15,7 @@ dependencies = [
     "openpyxl",
     "PyYAML",
     "PySide6",
+    "scipy",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,42 @@
+solver:
+  executable_path: ../../OpenSees.exe
+  tcl_library_path: ../../lib/tcl8.6
+  timeout: 120
+material_template: ../materials/twostage.yaml
+loading:
+  # The fit workflow uses experiment displacement data directly. This block is
+  # retained so the same project can also be run with the normal `run` command.
+  amplitudes: [0.0, 8.0, -8.0, 12.0, -12.0, 20.0, -20.0, 0.0]
+  du: 0.25
+experiment:
+  path: ../data/twostage_experiment_sample.csv
+  displacement_column: displacement
+  force_column: force
+output_dir: ../../outputs/runs
+area: 1.0
+length: 1.0
+fitting:
+  algorithm: de
+  max_evaluations: 160
+  population_size: 16
+  local_refine: true
+  local_max_evaluations: 80
+  loss: soft_l1
+  f_scale: 1.0
+  seed: 42
+  parameters:
+    - name: f1
+      min: 100.0
+      max: 500.0
+    - name: k1
+      min: 10.0
+      max: 100.0
+    - name: f2
+      min: 50.0
+      max: 450.0
+    - name: k2
+      min: 5.0
+      max: 80.0
+    - name: ua
+      min: 5.0
+      max: 60.0
