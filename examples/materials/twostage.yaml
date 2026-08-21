@@ -6,19 +6,40 @@ parameters:
   - name: f1
     value: 270.0
     min: 0.0
+    description: 第一阶段控制力
+    unit: force
+    effect: 控制第一阶段滞回分支的力水平
   - name: k1
     value: 45.0
     min: 0.0
+    description: 第一阶段初始刚度
+    unit: force/deformation
+    effect: 控制第一阶段初始斜率
   - name: kp1
     value: 0.25
+    description: 第一阶段后续刚度比
+    unit: dimensionless
+    effect: 控制第一阶段激活后的斜率
   - name: f2
     value: 220.0
     min: 0.0
+    description: 第二阶段控制力
+    unit: force
+    effect: 控制第二阶段滞回分支的力水平
   - name: k2
     value: 24.0
     min: 0.0
+    description: 第二阶段初始刚度
+    unit: force/deformation
+    effect: 控制第二阶段初始斜率
   - name: kp2
     value: 0.20
+    description: 第二阶段后续刚度比
+    unit: dimensionless
+    effect: 控制第二阶段激活后的斜率
   - name: ua
     value: 24.0
     min: 0.0
+    description: 第二阶段激活变形
+    unit: deformation
+    effect: 控制第二阶段开始参与响应的位置

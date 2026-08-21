@@ -1,0 +1,21 @@
+name: NestedElastic
+description: Four elastic materials for an explicit nested series-parallel demonstration.
+command: |
+  uniaxialMaterial Elastic 101 {k1}
+  uniaxialMaterial Elastic 102 {k2}
+  uniaxialMaterial Elastic 103 {k3}
+  uniaxialMaterial Elastic 104 {k4}
+tag: 1
+parameters:
+  - name: k1
+    value: 100.0
+    min: 1.0
+  - name: k2
+    value: 50.0
+    min: 1.0
+  - name: k3
+    value: 80.0
+    min: 1.0
+  - name: k4
+    value: 20.0
+    min: 1.0

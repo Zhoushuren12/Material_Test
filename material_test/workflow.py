@@ -72,6 +72,9 @@ def _load_optional_experiment(config: ProjectConfig) -> ExperimentData | None:
 
 
 def _default_run_dir(output_dir: Path, material_name: str) -> Path:
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    safe_name = "".join(char.lower() if char.isalnum() else "_" for char in material_name).strip("_")
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    safe_name = "".join(
+        char.lower() if char.isascii() and char.isalnum() else "_"
+        for char in material_name
+    ).strip("_")
     return Path(output_dir) / f"{timestamp}-{safe_name or 'material'}"

@@ -6,17 +6,38 @@ parameters:
   - name: k1
     value: 9122.2072
     min: 0.0
+    description: 初始刚度
+    unit: force/deformation
+    effect: 控制激活前弹性段斜率
   - name: k2
     value: 1107.3346
     min: 0.0
+    description: 激活后刚度
+    unit: force/deformation
+    effect: 控制旗形平台后的斜率
   - name: sigAct
     value: 19953.0173
     min: 0.0
+    description: 激活力
+    unit: force
+    effect: 控制旗形滞回开始张开的力水平
   - name: beta
     value: 0.2648
+    description: 正负向激活力比
+    unit: dimensionless
+    effect: 控制正负向响应不对称程度
   - name: epsSlip
     value: 20.2281
+    description: 滑移变形
+    unit: deformation
+    effect: 控制旗形响应中的滑移平台长度
   - name: epsBear
     value: 0.0
+    description: 承压变形
+    unit: deformation
+    effect: 指定滑移后开始承压的位置
   - name: rBear
     value: 0.0
+    description: 承压刚度比
+    unit: dimensionless
+    effect: 控制承压段相对刚度

@@ -50,6 +50,8 @@ class ParameterSpec:
     min: float | None = None
     max: float | None = None
     description: str = ""
+    unit: str = ""
+    effect: str = ""
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "ParameterSpec":
@@ -63,6 +65,8 @@ class ParameterSpec:
             min=_optional_float(data.get("min")),
             max=_optional_float(data.get("max")),
             description=str(data.get("description", "")),
+            unit=str(data.get("unit", "")),
+            effect=str(data.get("effect", "")),
         )
 
     def to_mapping(self) -> dict[str, Any]:
@@ -73,6 +77,10 @@ class ParameterSpec:
             data["max"] = self.max
         if self.description:
             data["description"] = self.description
+        if self.unit:
+            data["unit"] = self.unit
+        if self.effect:
+            data["effect"] = self.effect
         return data
 
     def validate_value(self) -> None:
@@ -355,37 +363,164 @@ class ProjectConfig:
 
 
 @dataclass
+class TopologyNode:
+    """A two-terminal material component or a recursive series/parallel group."""
+
+    kind: str
+    name: str = ""
+    material_tag: int | None = None
+    children: list["TopologyNode"] = field(default_factory=list)
+    area: float | None = None
+    length_weight: float = 1.0
+
+    @classmethod
+    def material(
+        cls,
+        material_tag: int,
+        *,
+        name: str = "",
+        area: float | None = None,
+        length_weight: float = 1.0,
+    ) -> "TopologyNode":
+        return cls(
+            kind="material",
+            name=name,
+            material_tag=int(material_tag),
+            area=area,
+            length_weight=float(length_weight),
+        )
+
+    @classmethod
+    def group(
+        cls,
+        kind: str,
+        children: list["TopologyNode"],
+        *,
+        name: str = "",
+        length_weight: float = 1.0,
+    ) -> "TopologyNode":
+        return cls(
+            kind=kind,
+            name=name,
+            children=list(children),
+            length_weight=float(length_weight),
+        )
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> "TopologyNode":
+        if not isinstance(data, dict):
+            raise ValueError("modeling.root must be a mapping")
+        kind = str(data.get("type", data.get("kind", ""))).lower()
+        node = cls(
+            kind=kind,
+            name=str(data.get("name", "")),
+            material_tag=int(data["material_tag"]) if data.get("material_tag") is not None else None,
+            children=[cls.from_mapping(child) for child in data.get("children", [])],
+            area=_optional_float(data.get("area")),
+            length_weight=float(data.get("length_weight", 1.0)),
+        )
+        node.validate(require_assigned=False)
+        return node
+
+    def validate(self, *, require_assigned: bool = True) -> None:
+        if self.kind not in {"material", "series", "parallel"}:
+            raise ValueError("topology component type must be 'material', 'series', or 'parallel'")
+        if not np.isfinite(self.length_weight) or self.length_weight <= 0:
+            raise ValueError("topology component length_weight must be positive")
+        if self.kind == "material":
+            if self.material_tag is None and require_assigned:
+                raise ValueError("material topology components require a positive material_tag")
+            if self.material_tag is not None and self.material_tag <= 0:
+                raise ValueError("material topology components require a positive material_tag")
+            if self.children:
+                raise ValueError("material topology components cannot contain children")
+            if self.area is not None and (not np.isfinite(self.area) or self.area <= 0):
+                raise ValueError("material topology component area must be positive")
+            return
+        if self.material_tag is not None:
+            raise ValueError(f"{self.kind} topology groups cannot define material_tag")
+        if len(self.children) < 2:
+            raise ValueError(f"{self.kind} topology groups require at least two children")
+        for child in self.children:
+            child.validate(require_assigned=require_assigned)
+
+    def to_mapping(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"type": self.kind}
+        if self.name:
+            data["name"] = self.name
+        if not np.isclose(self.length_weight, 1.0):
+            data["length_weight"] = self.length_weight
+        if self.kind == "material":
+            data["material_tag"] = self.material_tag
+            if self.area is not None:
+                data["area"] = self.area
+        else:
+            data["children"] = [child.to_mapping() for child in self.children]
+        return data
+
+    def material_tags(self) -> list[int]:
+        if self.kind == "material":
+            return [] if self.material_tag is None else [int(self.material_tag)]
+        tags: list[int] = []
+        for child in self.children:
+            tags.extend(child.material_tags())
+        return tags
+
+
+@dataclass
 class ModelingConfig:
     """Controls how material tags are connected in the OpenSees test model."""
 
     topology: str = "single"
     material_tags: list[int] = field(default_factory=list)
+    root: TopologyNode | None = None
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> "ModelingConfig":
         data = data or {}
+        root_data = data.get("root")
         config = cls(
-            topology=str(data.get("topology", "single")).lower(),
+            topology=str(data.get("topology", "nested" if root_data else "single")).lower(),
             material_tags=[int(tag) for tag in data.get("material_tags", [])],
+            root=TopologyNode.from_mapping(root_data) if root_data is not None else None,
         )
-        config.validate()
+        config.validate(require_assigned=False)
         return config
 
-    def validate(self) -> None:
-        if self.topology not in {"single", "series", "parallel"}:
-            raise ValueError("modeling.topology must be 'single', 'series', or 'parallel'")
+    def validate(self, *, require_assigned: bool = True) -> None:
+        if self.topology not in {"single", "series", "parallel", "nested"}:
+            raise ValueError("modeling.topology must be 'single', 'series', 'parallel', or 'nested'")
+        if self.root is not None:
+            self.root.validate(require_assigned=require_assigned)
+            return
+        if self.topology == "nested":
+            raise ValueError("nested modeling requires a root topology component")
         if any(tag <= 0 for tag in self.material_tags):
             raise ValueError("modeling.material_tags must contain positive integers")
-        if len(set(self.material_tags)) != len(self.material_tags):
-            raise ValueError("modeling.material_tags must not contain duplicates")
         if self.topology != "single" and len(self.material_tags) < 2:
             raise ValueError(f"explicit {self.topology} modeling requires at least two material tags")
 
     def to_mapping(self) -> dict[str, Any]:
+        if self.root is not None:
+            return {
+                "topology": "nested",
+                "root": self.root.to_mapping(),
+            }
         return {
             "topology": self.topology,
             "material_tags": list(self.material_tags),
         }
+
+    def resolved_root(self, test_material_tag: int) -> TopologyNode:
+        """Return the recursive form while keeping legacy project files readable."""
+        if self.root is not None:
+            return self.root
+        if self.topology == "single":
+            return TopologyNode.material(test_material_tag)
+        return TopologyNode.group(
+            self.topology,
+            [TopologyNode.material(tag) for tag in self.material_tags],
+        )
 
 
 def _optional_float(value: Any) -> float | None:

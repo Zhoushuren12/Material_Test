@@ -1,0 +1,185 @@
+schema_version: 1
+library_name: SMA brace research starter library
+materials:
+  - id: elastic
+    name: Elastic
+    display_name: Elastic 完全弹性材料
+    category: 基础弹性
+    description: 线性完全弹性单轴材料，加载与卸载沿同一直线返回原点，不产生残余变形或滞回耗能。
+    command: uniaxialMaterial Elastic {tag} {E}
+    source_type: OpenSees documentation
+    source_url: https://opensees.github.io/OpenSeesDocumentation/user/manual/material/uniaxialMaterials/Elastic.html
+    compatibility: official
+    notes: 适合弹性杆件、连接弹簧、串并联拓扑中的线性支路，也可用作非线性材料对比基准。
+    keywords: [elastic, linear, spring, 完全弹性, 线弹性, 弹簧]
+    parameters:
+      - {name: E, label: 弹性刚度, value: 200000.0, min: 0.0, unit: force/deformation, description: 控制力与变形直线关系的斜率}
+
+  - id: sma
+    name: SMA
+    display_name: SMA 形状记忆合金
+    category: SMA 与自复位
+    description: 一维超弹性形状记忆合金材料，适用于 SMA 丝、杆或支撑核心的循环响应研究。
+    command: uniaxialMaterial SMA {tag} {E} {eps_L} {sig_AM_s} {sig_AM_f} {sig_MA_s} {sig_MA_f}
+    source_type: OpenSees source
+    source_url: https://github.com/OpenSees/OpenSees/blob/master/SRC/material/uniaxial/SMAMaterial.cpp
+    compatibility: current_solver_verified
+    notes: 参数单位必须与试件面积、长度和结构模型的单位体系保持一致。
+    keywords: [SMA, shape memory alloy, superelastic, self-centering, 形状记忆合金, 超弹性]
+    parameters:
+      - {name: E, label: 初始弹性模量, value: 1100.0, min: 0.0, unit: model stress unit, description: 控制初始加载和卸载段斜率}
+      - {name: eps_L, label: 最大残余应变参数, value: 9.0, min: 0.0, unit: model strain unit, description: 控制相变平台长度和旗形环宽度}
+      - {name: sig_AM_s, label: 奥氏体至马氏体起始应力, value: 2500.0, min: 0.0, unit: model stress unit, description: 决定正向相变平台起点}
+      - {name: sig_AM_f, label: 奥氏体至马氏体结束应力, value: 3100.0, min: 0.0, unit: model stress unit, description: 决定正向相变平台终点}
+      - {name: sig_MA_s, label: 马氏体至奥氏体起始应力, value: 1900.0, min: 0.0, unit: model stress unit, description: 决定卸载反相变起点}
+      - {name: sig_MA_f, label: 马氏体至奥氏体结束应力, value: 1200.0, min: 0.0, unit: model stress unit, description: 决定卸载反相变终点和回中心路径}
+
+  - id: self_centering
+    name: SelfCentering
+    display_name: SelfCentering 自复位材料
+    category: SMA 与自复位
+    description: 双刚度旗形滞回材料，可用于自复位支撑、SMA 装置或预应力自复位构件的等效建模。
+    command: uniaxialMaterial SelfCentering {tag} {k1} {k2} {sigAct} {beta} {epsSlip} {epsBear} {rBear}
+    source_type: OpenSees source
+    source_url: https://github.com/OpenSees/OpenSees/blob/master/SRC/material/uniaxial/SelfCenteringMaterial.cpp
+    compatibility: current_solver_verified
+    notes: epsSlip、epsBear 和 rBear 为可选行为参数；库中显式给出便于拟合。
+    keywords: [self centering, flag shaped, SMA brace, 自复位, 旗形]
+    parameters:
+      - {name: k1, label: 初始刚度, value: 9000.0, min: 0.0, unit: force/deformation, description: 控制激活前弹性段斜率}
+      - {name: k2, label: 激活后刚度, value: 1100.0, min: 0.0, unit: force/deformation, description: 控制旗形平台后的斜率}
+      - {name: sigAct, label: 激活力, value: 20000.0, min: 0.0, unit: force, description: 控制旗形滞回开始张开的力水平}
+      - {name: beta, label: 正负向激活力比, value: 0.30, min: 0.0, unit: dimensionless, description: 控制正负向激活不对称程度}
+      - {name: epsSlip, label: 滑移变形, value: 0.0, min: 0.0, unit: deformation, description: 大于零时引入滑移平台}
+      - {name: epsBear, label: 承压变形, value: 0.0, min: 0.0, unit: deformation, description: 指定滑移后开始承压的位置}
+      - {name: rBear, label: 承压刚度比, value: 0.0, min: 0.0, unit: dimensionless, description: 控制承压段刚度相对初始刚度的比例}
+
+  - id: steel01
+    name: Steel01
+    display_name: Steel01 双线性钢材
+    category: 钢材与支撑
+    description: 带可选各向同性硬化的双线性钢材，适合作为钢支撑或屈服段的基础模型。
+    command: uniaxialMaterial Steel01 {tag} {Fy} {E0} {b}
+    source_type: OpenSees documentation
+    source_url: https://opensees.github.io/OpenSeesDocumentation/user/manual/material/uniaxialMaterials/Steel01.html
+    compatibility: official
+    notes: 示例值采用常见钢材量级，仅用于建立可运行模型，使用前应换成试验或规范参数。
+    keywords: [steel, bilinear, brace, 钢材, 双线性, 支撑]
+    parameters:
+      - {name: Fy, label: 屈服强度, value: 355.0, min: 0.0, unit: model stress unit, description: 控制弹性段转入屈服的平台高度}
+      - {name: E0, label: 初始弹性模量, value: 200000.0, min: 0.0, unit: model stress unit, description: 控制初始弹性斜率和屈服应变}
+      - {name: b, label: 应变硬化比, value: 0.01, min: 0.0, unit: dimensionless, description: 控制屈服后切线刚度}
+
+  - id: steel02
+    name: Steel02
+    display_name: Steel02 Menegotto-Pinto 钢材
+    category: 钢材与支撑
+    description: 具有平滑过渡和包辛格效应的钢材模型，适合钢支撑反复循环响应。
+    command: uniaxialMaterial Steel02 {tag} {Fy} {E0} {b} {R0} {cR1} {cR2}
+    source_type: OpenSees documentation
+    source_url: https://opensees.github.io/OpenSeesDocumentation/user/manual/material/uniaxialMaterials/Steel02.html
+    compatibility: official
+    notes: R0、cR1 和 cR2 控制弹塑性过渡曲线形状。
+    keywords: [steel, Menegotto Pinto, Bauschinger, cyclic, 钢材, 包辛格]
+    parameters:
+      - {name: Fy, label: 屈服强度, value: 355.0, min: 0.0, unit: model stress unit, description: 控制首次屈服的应力水平}
+      - {name: E0, label: 初始弹性模量, value: 200000.0, min: 0.0, unit: model stress unit, description: 控制初始弹性段斜率}
+      - {name: b, label: 应变硬化比, value: 0.01, min: 0.0, unit: dimensionless, description: 控制稳定塑性段切线刚度}
+      - {name: R0, label: 初始过渡控制参数, value: 20.0, min: 0.0, unit: dimensionless, description: 控制屈服转折的初始圆滑程度}
+      - {name: cR1, label: 过渡更新参数 cR1, value: 0.925, min: 0.0, unit: dimensionless, description: 控制循环后过渡曲率的演化}
+      - {name: cR2, label: 过渡更新参数 cR2, value: 0.15, min: 0.0, unit: dimensionless, description: 与 cR1 共同控制包辛格过渡形状}
+
+  - id: elastic_pp_gap
+    name: ElasticPPGap
+    display_name: ElasticPPGap 间隙滑移材料
+    category: 摩擦、滑移与捏拢
+    description: 弹性理想塑性间隙材料，可用于简化摩擦滑移、螺栓孔间隙或接触支路。
+    command: uniaxialMaterial ElasticPPGap {tag} {E} {Fy} {gap} {eta}
+    source_type: OpenSees documentation
+    source_url: https://opensees.github.io/OpenSeesDocumentation/user/manual/material/uniaxialMaterials/ElasticPP_Gap.html
+    compatibility: official
+    notes: 这是滑移/间隙的简化等效模型，并非完整的库仑摩擦接触模型。
+    keywords: [friction, slip, gap, contact, 摩擦, 滑移, 间隙]
+    parameters:
+      - {name: E, label: 初始刚度, value: 100000.0, min: 0.0, unit: force/deformation, description: 控制间隙闭合后的弹性斜率}
+      - {name: Fy, label: 屈服或滑移力, value: 100.0, min: 0.0, unit: force, description: 控制开始滑移的平台力}
+      - {name: gap, label: 初始间隙, value: 0.0, unit: deformation, description: 控制材料开始受力前的空程}
+      - {name: eta, label: 塑性段切线比, value: 0.0, min: 0.0, unit: dimensionless, description: 控制滑移后的残余斜率}
+
+  - id: hysteretic
+    name: Hysteretic
+    display_name: Hysteretic 捏拢退化材料
+    category: 摩擦、滑移与捏拢
+    description: 基于正负向骨架点的通用滞回模型，支持捏拢、延性损伤、耗能损伤和卸载刚度退化。
+    command: uniaxialMaterial Hysteretic {tag} {s1p} {e1p} {s2p} {e2p} {s1n} {e1n} {s2n} {e2n} {pinchX} {pinchY} {damage1} {damage2} {beta}
+    source_type: OpenSees documentation
+    source_url: https://opensees.github.io/OpenSeesDocumentation/user/manual/material/uniaxialMaterials/Hysteretic.html
+    compatibility: official
+    notes: 该条目采用双线性正负向骨架；力和变形应严格成对输入。
+    keywords: [hysteretic, pinching, degradation, friction damper, 滞回, 捏拢, 退化]
+    parameters:
+      - {name: s1p, label: 正向第一骨架力, value: 100.0, unit: force, description: 定义正向第一转折点的力坐标}
+      - {name: e1p, label: 正向第一骨架变形, value: 1.0, unit: deformation, description: 定义正向第一转折点的变形坐标}
+      - {name: s2p, label: 正向第二骨架力, value: 120.0, unit: force, description: 定义正向第二转折点的力坐标}
+      - {name: e2p, label: 正向第二骨架变形, value: 5.0, unit: deformation, description: 定义正向第二转折点的变形坐标}
+      - {name: s1n, label: 负向第一骨架力, value: -100.0, unit: force, description: 定义负向第一转折点的力坐标}
+      - {name: e1n, label: 负向第一骨架变形, value: -1.0, unit: deformation, description: 定义负向第一转折点的变形坐标}
+      - {name: s2n, label: 负向第二骨架力, value: -120.0, unit: force, description: 定义负向第二转折点的力坐标}
+      - {name: e2n, label: 负向第二骨架变形, value: -5.0, unit: deformation, description: 定义负向第二转折点的变形坐标}
+      - {name: pinchX, label: 变形捏拢系数, value: 0.5, min: 0.0, max: 1.0, unit: dimensionless, description: 控制再加载路径在变形方向的捏拢}
+      - {name: pinchY, label: 力捏拢系数, value: 0.5, min: 0.0, max: 1.0, unit: dimensionless, description: 控制再加载路径在力方向的捏拢}
+      - {name: damage1, label: 延性损伤系数, value: 0.0, min: 0.0, unit: dimensionless, description: 控制随最大延性发展的强度损伤}
+      - {name: damage2, label: 耗能损伤系数, value: 0.0, min: 0.0, unit: dimensionless, description: 控制随累积耗能发展的强度损伤}
+      - {name: beta, label: 卸载刚度退化指数, value: 0.0, min: 0.0, unit: dimensionless, description: 控制循环卸载刚度退化速度}
+
+  - id: concrete02
+    name: Concrete02
+    display_name: Concrete02 受拉软化混凝土
+    category: 混凝土
+    description: 具有线性受拉软化和受压卸载规则的单轴混凝土模型。
+    command: uniaxialMaterial Concrete02 {tag} {fpc} {epsc0} {fpcu} {epsU} {lambda} {ft} {Ets}
+    source_type: OpenSees documentation
+    source_url: https://opensees.github.io/OpenSeesDocumentation/user/manual/material/uniaxialMaterials/Concrete02.html
+    compatibility: official
+    notes: 受压强度和受压应变按 OpenSees 约定使用负值。
+    keywords: [concrete, tension softening, cyclic, 混凝土, 受拉软化]
+    parameters:
+      - {name: fpc, label: 峰值抗压强度, value: -40.0, max: 0.0, unit: model stress unit, description: 控制受压包络线峰值}
+      - {name: epsc0, label: 峰值抗压应变, value: -0.002, max: 0.0, unit: strain, description: 控制受压峰值所在的应变位置}
+      - {name: fpcu, label: 极限抗压强度, value: -8.0, max: 0.0, unit: model stress unit, description: 控制下降段终点残余强度}
+      - {name: epsU, label: 极限压应变, value: -0.006, max: 0.0, unit: strain, description: 控制下降段终点应变}
+      - {name: lambda, label: 卸载刚度比, value: 0.1, min: 0.0, max: 1.0, unit: dimensionless, description: 控制受压循环卸载和再加载斜率}
+      - {name: ft, label: 抗拉强度, value: 3.0, min: 0.0, unit: model stress unit, description: 控制拉伸开裂起点}
+      - {name: Ets, label: 拉伸软化刚度, value: 200.0, min: 0.0, unit: stress/strain, description: 控制开裂后的拉伸软化斜率}
+
+  - id: viscous
+    name: Viscous
+    display_name: Viscous 幂律粘滞阻尼
+    category: 粘弹与阻尼
+    description: 幂律速度相关粘滞材料，关系为力等于 C 乘速度的 alpha 次幂。
+    command: uniaxialMaterial Viscous {tag} {C} {alpha} {minVel}
+    source_type: OpenSees source
+    source_url: https://github.com/OpenSees/OpenSees/blob/master/SRC/material/uniaxial/ViscousMaterial.cpp
+    compatibility: requires_transient
+    notes: 当前静力位移控制可识别此命令，但不能产生可用于标定的粘滞响应；必须采用有物理时间步和加载速率的瞬态协议。
+    keywords: [viscous, dashpot, velocity, damper, 粘滞, 阻尼器, 速度相关]
+    parameters:
+      - {name: C, label: 粘滞系数, value: 100.0, min: 0.0, unit: force/(velocity^alpha), description: 控制给定速度下的阻尼力幅值}
+      - {name: alpha, label: 速度指数, value: 1.0, min: 0.0, unit: dimensionless, description: 控制阻尼力对速度的非线性敏感性}
+      - {name: minVel, label: 最小速度阈值, value: 1.0e-11, min: 0.0, unit: velocity, description: 控制接近零速度时的数值正则化}
+
+  - id: viscoelastic_gap
+    name: ViscoelasticGap
+    display_name: ViscoelasticGap 粘弹性碰撞间隙
+    category: 粘弹与阻尼
+    description: Jankowski 压缩型粘弹性碰撞材料，由弹簧、阻尼和初始间隙组成。
+    command: uniaxialMaterial ViscoelasticGap {tag} {K} {c} {gap}
+    source_type: OpenSees documentation
+    source_url: https://opensees.github.io/OpenSeesDocumentation/user/manual/material/uniaxialMaterials/ViscoelasticGap.html
+    compatibility: requires_transient
+    notes: 该材料仅受压工作，OpenSees 官方说明要求 gap 输入负值；接触刚度可在静力流程中检查，阻尼参数 c 必须通过瞬态碰撞协议标定。
+    keywords: [viscoelastic, impact, gap, pounding, 粘弹性, 碰撞, 间隙]
+    parameters:
+      - {name: K, label: 接触刚度, value: 100000.0, min: 0.0, unit: force/deformation, description: 控制间隙闭合后的接触弹性斜率}
+      - {name: c, label: 阻尼系数, value: 100.0, min: 0.0, unit: force/velocity, description: 控制碰撞接触阶段的速度耗能}
+      - {name: gap, label: 初始间隙, value: -0.001, max: 0.0, unit: deformation, description: 控制开始发生接触的相对位移}

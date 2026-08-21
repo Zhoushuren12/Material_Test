@@ -1,0 +1,35 @@
+solver:
+  executable_path: ../../OpenSees.exe
+  tcl_library_path: ../../lib/tcl8.6
+  timeout: 120
+material_template: ../materials/nested_elastic.yaml
+loading:
+  amplitudes: [0.0, 1.0, -1.0, 2.0, -2.0, 0.0]
+  du: 0.05
+output_dir: ../../outputs/runs
+area: 1.0
+length: 1.0
+modeling:
+  topology: nested
+  root:
+    type: series
+    name: two parallel stages in series
+    children:
+      - type: parallel
+        name: stage A
+        children:
+          - type: material
+            name: spring A1
+            material_tag: 101
+          - type: material
+            name: spring A2
+            material_tag: 102
+      - type: parallel
+        name: stage B
+        children:
+          - type: material
+            name: spring B1
+            material_tag: 103
+          - type: material
+            name: spring B2
+            material_tag: 104

@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 
+from material_test.domain import TopologyNode
+from material_test.modeling import compile_topology
+
 
 def write_material_test_tcl(
     *,
@@ -16,6 +19,7 @@ def write_material_test_tcl(
     test_material_tag: int = 1,
     topology: str = "single",
     material_tags: Sequence[int] | None = None,
+    topology_root: TopologyNode | None = None,
 ) -> None:
     """Write a Tcl model for a uniaxial material cyclic displacement test."""
     tcl_file.parent.mkdir(parents=True, exist_ok=True)
@@ -27,6 +31,7 @@ def write_material_test_tcl(
         test_material_tag=test_material_tag,
         area=area,
         length=length,
+        topology_root=topology_root,
     )
     tcl_file.write_text(
         f"""wipe
@@ -52,6 +57,7 @@ analysis Static
 set out [open "{response_tcl}" w]
 for {{set i 0}} {{$i < {n_steps}}} {{incr i}} {{
     set u [nodeDisp {controlled_node} 1]
+    reactions
     set f {force_expression}
     puts $out "$u $f"
     set ok [analyze 1]
@@ -75,43 +81,35 @@ def _explicit_model_commands(
     test_material_tag: int,
     area: float,
     length: float,
+    topology_root: TopologyNode | None = None,
 ) -> tuple[str, int, str]:
     topology = topology.lower()
-    tags = [int(tag) for tag in (material_tags or [])]
-    if topology not in {"single", "series", "parallel"}:
-        raise ValueError("topology must be 'single', 'series', or 'parallel'")
-    if topology == "single":
-        tags = [int(test_material_tag)]
-    elif len(tags) < 2:
-        raise ValueError(f"explicit {topology} modeling requires at least two material tags")
-    if any(tag <= 0 for tag in tags):
-        raise ValueError("material tags must be positive integers")
-    if len(set(tags)) != len(tags):
-        raise ValueError("material tags must not contain duplicates")
+    if topology_root is None:
+        tags = [int(tag) for tag in (material_tags or [])]
+        if topology not in {"single", "series", "parallel"}:
+            raise ValueError("topology must be 'single', 'series', or 'parallel'")
+        if topology == "single":
+            topology_root = TopologyNode.material(test_material_tag)
+        else:
+            if len(tags) < 2:
+                raise ValueError(f"explicit {topology} modeling requires at least two material tags")
+            topology_root = TopologyNode.group(
+                topology,
+                [TopologyNode.material(tag) for tag in tags],
+            )
 
-    if topology == "series":
-        segment_length = length / len(tags)
-        lines = [f"node {index + 1} {index * segment_length:.12g} 0.0" for index in range(len(tags) + 1)]
-        lines.extend(
-            f"element Truss {index} {index} {index + 1} {area:.12g} {tag}"
-            for index, tag in enumerate(tags, start=1)
-        )
-        lines.append("fix 1 1 1 1")
-        lines.extend(f"fix {node} 0 1 1" for node in range(2, len(tags) + 2))
-        return "\n".join(lines), len(tags) + 1, "[expr -1.0 * [eleForce 1 1]]"
-
-    lines = [
-        "node 1 0.0 0.0",
-        f"node 2 {length:.12g} 0.0",
-    ]
+    compiled = compile_topology(topology_root, default_area=area, total_length=length)
+    lines = [f"node {node.tag} {node.x:.12g} 0.0" for node in compiled.nodes]
     lines.extend(
-        f"element Truss {index} 1 2 {area:.12g} {tag}"
-        for index, tag in enumerate(tags, start=1)
+        f"element Truss {element.tag} {element.node_i} {element.node_j} "
+        f"{element.area:.12g} {element.material_tag}"
+        for element in compiled.elements
     )
-    lines.extend(["fix 1 1 1 1", "fix 2 0 1 1"])
-    if topology == "parallel":
-        element_forces = " + ".join(f"[eleForce {index} 1]" for index in range(1, len(tags) + 1))
-        force_expression = f"[expr -1.0 * ({element_forces})]"
-    else:
-        force_expression = "[expr -1.0 * [eleForce 1 1]]"
-    return "\n".join(lines), 2, force_expression
+    lines.append(f"fix {compiled.fixed_node} 1 1 1")
+    lines.extend(
+        f"fix {node.tag} 0 1 1"
+        for node in compiled.nodes
+        if node.tag != compiled.fixed_node
+    )
+    force_expression = f"[expr -1.0 * [nodeReaction {compiled.fixed_node} 1]]"
+    return "\n".join(lines), compiled.controlled_node, force_expression

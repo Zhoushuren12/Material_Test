@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy",
     "matplotlib",
+    "pyqtgraph",
     "pandas",
     "openpyxl",
     "PyYAML",
@@ -32,3 +33,6 @@ pythonpath = ["."]
 
 [tool.setuptools.packages.find]
 include = ["material_test*"]
+
+[tool.setuptools.package-data]
+material_test = ["resources/*.yaml"]

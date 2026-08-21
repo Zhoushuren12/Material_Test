@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from material_test.domain import MaterialTemplate, ModelingConfig, SimulationResult, SolverConfig
+from material_test.modeling import defined_material_tags
 from material_test.opensees.tcl_writer import write_material_test_tcl
 
 
@@ -25,9 +26,7 @@ def run_material_history(
     if not executable.exists():
         raise FileNotFoundError(f"OpenSees executable not found: {executable}")
 
-    tcl_library = solver.tcl_library_path.resolve() if solver.tcl_library_path else None
-    if tcl_library is not None and not tcl_library.exists():
-        raise FileNotFoundError(f"Tcl library not found: {tcl_library}")
+    tcl_library = _resolve_tcl_library(solver, executable)
 
     work_dir = work_dir.resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -48,17 +47,24 @@ def run_material_history(
     np.savetxt(history_file, np.r_[history, history[-1]], fmt="%.12g")
     modeling = modeling or ModelingConfig()
     modeling.validate()
+    material_command = material.render_command()
+    topology_root = modeling.resolved_root(material.tag)
+    missing_tags = sorted(set(topology_root.material_tags()) - defined_material_tags(material_command))
+    if missing_tags:
+        missing = ", ".join(str(tag) for tag in missing_tags)
+        raise ValueError(f"explicit model references undefined material tags: {missing}")
     write_material_test_tcl(
         tcl_file=tcl_file,
         history_file=history_file,
         response_file=response_file,
-        material_command=material.render_command(),
+        material_command=material_command,
         n_steps=history.size,
         area=area,
         length=length,
         test_material_tag=material.tag,
         topology=modeling.topology,
         material_tags=modeling.material_tags,
+        topology_root=topology_root,
     )
 
     env = os.environ.copy()
@@ -85,8 +91,18 @@ def run_material_history(
             f"stderr:\n{process.stderr}"
         )
     if not response_file.exists():
+        initialization_hint = ""
+        diagnostic_output = f"{process.stdout}\n{process.stderr}".lower()
+        if "can't find a usable init.tcl" in diagnostic_output:
+            initialization_hint = (
+                "\nOpenSees Tcl initialization failed. Configure solver.tcl_library_path "
+                "or place init.tcl under lib/tcl8.6 next to OpenSees.exe."
+            )
         raise RuntimeError(
             "OpenSees did not write a response file\n"
+            f"command: {executable} {tcl_file}\n"
+            f"return code: {process.returncode}"
+            f"{initialization_hint}\n"
             f"stdout:\n{process.stdout}\n"
             f"stderr:\n{process.stderr}"
         )
@@ -112,5 +128,29 @@ def run_material_history(
 
 
 def _safe_stem(value: str) -> str:
-    cleaned = "".join(char.lower() if char.isalnum() else "_" for char in value).strip("_")
+    # The bundled Windows OpenSees build cannot reliably decode non-ASCII
+    # script paths passed on its command line. UI display names may be Chinese,
+    # so keep generated solver filenames strictly ASCII.
+    cleaned = "".join(
+        char.lower() if char.isascii() and char.isalnum() else "_"
+        for char in value
+    ).strip("_")
     return cleaned or "material"
+
+
+def _resolve_tcl_library(solver: SolverConfig, executable: Path) -> Path | None:
+    """Resolve Tcl explicitly, then fall back to a library bundled with OpenSees."""
+    if solver.tcl_library_path is not None:
+        configured = solver.tcl_library_path.resolve()
+        if not configured.exists():
+            raise FileNotFoundError(f"Tcl library not found: {configured}")
+        return configured
+
+    bundled_candidates = (
+        executable.parent / "lib" / "tcl8.6",
+        executable.parent.parent / "lib" / "tcl8.6",
+    )
+    for candidate in bundled_candidates:
+        if (candidate / "init.tcl").is_file():
+            return candidate.resolve()
+    return None

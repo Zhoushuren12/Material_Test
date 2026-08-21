@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib as mpl
+import numpy as np
 from matplotlib.figure import Figure
+from matplotlib.ticker import MaxNLocator
 
 from material_test.domain import ExperimentData, SimulationResult
 
@@ -89,6 +91,107 @@ def create_overlay_figure(
     ax.legend(loc="best")
     style_force_displacement_axes(fig)
     return fig
+
+
+def create_comparison_figure(
+    current: SimulationResult,
+    experiment: ExperimentData | None = None,
+    baseline: SimulationResult | None = None,
+    *,
+    figure: Figure | None = None,
+) -> Figure:
+    """Create the manual parameter-comparison figure used by the UI."""
+    configure_plot_style()
+    fig = figure or Figure(figsize=(8, 6), dpi=100)
+    fig.clear()
+    ax = fig.add_subplot(111)
+
+    x_values: list[np.ndarray] = []
+    y_values: list[np.ndarray] = []
+    if experiment is not None:
+        ax.plot(
+            experiment.displacement,
+            experiment.force,
+            linewidth=2,
+            label="Experiment",
+        )
+        x_values.append(np.asarray(experiment.displacement, dtype=float))
+        y_values.append(np.asarray(experiment.force, dtype=float))
+    if baseline is not None:
+        ax.plot(
+            baseline.displacement,
+            baseline.force,
+            linewidth=2,
+            linestyle="--",
+            label="Baseline",
+        )
+        x_values.append(np.asarray(baseline.displacement, dtype=float))
+        y_values.append(np.asarray(baseline.force, dtype=float))
+    ax.plot(
+        current.displacement,
+        current.force,
+        linewidth=2.0,
+        label="Current",
+    )
+    x_values.append(np.asarray(current.displacement, dtype=float))
+    y_values.append(np.asarray(current.force, dtype=float))
+    _style_publication_comparison_axes(
+        ax,
+        np.concatenate(x_values),
+        np.concatenate(y_values),
+    )
+    ax.legend(loc="best", prop={"family": "Times New Roman", "size": 14}, frameon=False)
+    fig.tight_layout(rect=[0.01, 0.01, 0.95, 0.95])
+    return fig
+
+
+def save_comparison_plot(
+    output: str | Path,
+    current: SimulationResult,
+    experiment: ExperimentData | None = None,
+    baseline: SimulationResult | None = None,
+) -> Path:
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    figure = create_comparison_figure(current, experiment, baseline)
+    figure.savefig(output, dpi=300, bbox_inches="tight")
+    return output
+
+
+def _style_publication_comparison_axes(
+    axes,
+    displacement: np.ndarray,
+    force: np.ndarray,
+) -> None:
+    x_ticks = _major_ticks(displacement)
+    y_ticks = _major_ticks(force)
+    axes.set_xticks(x_ticks)
+    axes.set_yticks(y_ticks)
+    axes.set_xlim(float(x_ticks[0]), float(x_ticks[-1]))
+    axes.set_ylim(float(y_ticks[0]), float(y_ticks[-1]))
+    axes.minorticks_off()
+    axes.tick_params(axis="both", direction="in", which="major", labelsize=18)
+    axes.set_xlabel("Displacement", fontsize=25, fontname="Times New Roman")
+    axes.set_ylabel("Force", fontsize=25, fontname="Times New Roman")
+    axes.grid(True, which="major", linewidth=0.65, alpha=0.22)
+
+
+def _major_ticks(values: np.ndarray, bins: int = 6) -> np.ndarray:
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return np.array([0.0, 1.0])
+    lower = float(np.min(finite))
+    upper = float(np.max(finite))
+    if np.isclose(lower, upper):
+        span = max(abs(lower) * 0.1, 1.0)
+        lower -= span
+        upper += span
+    ticks = np.asarray(
+        MaxNLocator(nbins=bins, min_n_ticks=3).tick_values(lower, upper),
+        dtype=float,
+    )
+    return ticks if ticks.size >= 2 else np.array([lower, upper])
 
 
 def save_overlay_plot(
