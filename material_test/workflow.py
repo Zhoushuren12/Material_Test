@@ -23,6 +23,10 @@ class WorkflowResult:
 
 
 def run_project(config: ProjectConfig, *, run_dir: Path | None = None) -> WorkflowResult:
+    from material_test.brace_export import input_identity, checksum
+    import json
+    import hashlib
+    identity = input_identity(config)
     run_dir = (run_dir or _default_run_dir(config.output_dir, config.material.name)).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -48,6 +52,12 @@ def run_project(config: ProjectConfig, *, run_dir: Path | None = None) -> Workfl
         comments="",
     )
     figure_file = save_overlay_plot(run_dir / "overlay.png", simulation, experiment)
+    if checksum(input_identity(config)) != checksum(identity):
+        raise ValueError('计算期间输入发生变化，请重新计算以建立可靠的实验与计算来源')
+    (run_dir / 'input-manifest.json').write_text(
+        json.dumps({'input_sha256': checksum(identity), 'input_snapshot': identity,
+                    'simulation_sha256': hashlib.sha256(simulation_csv.read_bytes()).hexdigest()}, ensure_ascii=False, indent=2),
+        encoding='utf-8')
 
     return WorkflowResult(
         run_dir=run_dir,

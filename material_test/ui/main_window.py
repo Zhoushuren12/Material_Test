@@ -9,7 +9,7 @@ from PySide6.QtGui import QAction, QFont
 from PySide6.QtGui import QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QDialog, QDialogButtonBox,
     QInputDialog, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QSizePolicy, QSpinBox, QSplitter, QStackedWidget,
     QStyle, QTabWidget, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
@@ -158,6 +158,10 @@ class MainWindow(QMainWindow):
         self.save_project_action.triggered.connect(self.save_project)
         file_menu = self.menuBar().addMenu("文件")
         file_menu.addActions([self.load_project_action, self.save_project_action])
+        self.publish_brace_action = QAction('发布支撑模型到 Structural analysis…', self)
+        self.publish_brace_action.setShortcut('Ctrl+Shift+P')
+        self.publish_brace_action.triggered.connect(self.publish_brace)
+        file_menu.addAction(self.publish_brace_action)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -282,6 +286,8 @@ class MainWindow(QMainWindow):
         form.addRow("OpenSees", self._path_control(self.solver_path_edit, self.browse_solver, True))
         form.addRow("Tcl 库", self._path_control(self.tcl_library_edit, self.browse_tcl_library, False))
         form.addRow("超时时间", self.timeout_spin)
+        self.output_dir_edit = QLineEdit(str(ROOT / 'outputs' / 'runs'))
+        form.addRow('结果保存目录', self._path_control(self.output_dir_edit, self.browse_output_dir, False))
         layout.addLayout(form)
         layout.addSpacing(18)
         layout.addWidget(self._section_title("试件几何"))
@@ -677,6 +683,11 @@ class MainWindow(QMainWindow):
         self.export_button.clicked.connect(self.export_figure)
         self.export_button.setEnabled(False)
         controls_layout.addWidget(self.export_button)
+        self.publish_button = QPushButton('发布支撑模型…')
+        self.publish_button.setToolTip('保存两个轴向端口、显式内部装配及实验/计算来源，供 Structural analysis 导入')
+        self.publish_button.clicked.connect(self.publish_brace)
+        self.publish_button.setEnabled(False)
+        controls_layout.addWidget(self.publish_button)
         self.run_state_label = QLabel("就绪")
         self.run_state_label.setObjectName("runState")
         self.run_state_label.setWordWrap(True)
@@ -1533,6 +1544,50 @@ class MainWindow(QMainWindow):
         self._thread.finished.connect(self._thread_finished)
         self._thread.start()
 
+    def browse_output_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, '结果保存目录', self.output_dir_edit.text())
+        if path:
+            self.output_dir_edit.setText(path)
+
+    def publish_brace(self) -> None:
+        if isinstance(self.current_result, FitResult):
+            QMessageBox.information(self, '发布支撑模型', '拟合参数已回填。请先在“计算与对比”运行完整加载历程，再发布带完整输入与结果校验的支撑包。')
+            return
+        if self.current_result is None:
+            QMessageBox.information(self, '发布支撑模型', '请先用实际实验数据计算当前模型，再发布可执行支撑包。')
+            return
+        try:
+            from material_test.brace_export import build_brace_package
+            import json
+            config = self._config_from_ui()
+            package = build_brace_package(config, result_dir=self.current_result.run_dir)
+            dialog = QDialog(self)
+            dialog.setWindowTitle('支撑模型单位与接口')
+            layout = QVBoxLayout(dialog)
+            note = QLabel('接口：两端轴向连接。请选择当前输入数值采用的单位。\n面积需与长度单位的平方一致；本构按 A/L 转为支撑力—变形关系。')
+            note.setWordWrap(True)
+            layout.addWidget(note)
+            form = QFormLayout()
+            force = QComboBox(); force.addItems(['N', 'kN', 'MN'])
+            length = QComboBox(); length.addItems(['mm', 'cm', 'm'])
+            form.addRow('力', force); form.addRow('长度 / 位移', length)
+            layout.addLayout(form)
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+            buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            package = build_brace_package(config, result_dir=self.current_result.run_dir,
+                                          force_unit=force.currentText(), displacement_unit=length.currentText())
+            path, _ = QFileDialog.getSaveFileName(self, '发布支撑模型', str(self.current_result.run_dir / 'support.oasbrace'), '支撑模型包 (*.oasbrace)')
+            if not path:
+                return
+            Path(path).write_text(json.dumps(package, ensure_ascii=False, indent=2), encoding='utf-8')
+            self._append_log(f'已发布支撑包：{path}。在 Structural analysis → 组件装配 → 导入支撑模型中打开。')
+            QMessageBox.information(self, '支撑模型已发布', f'已保存两个轴向端口、可执行本构、试验与计算来源。\n{path}\n在 Structural analysis 的组件装配页导入后执行匹配检查。')
+        except (ValueError, OSError, KeyError) as exc:
+            QMessageBox.warning(self, '无法发布支撑模型', str(exc))
+
     def export_figure(self) -> None:
         if self.current_result is None:
             QMessageBox.information(self, "导出当前对比图", "当前没有可导出的计算结果。")
@@ -1611,6 +1666,8 @@ class MainWindow(QMainWindow):
         self._worker = None
 
     def _set_running(self, running: bool, text: str) -> None:
+        self.publish_button.setEnabled(not running and self.current_result is not None)
+        self.publish_brace_action.setEnabled(not running)
         self.run_button.setEnabled(not running)
         self.fit_page_button.setEnabled(not running)
         self.set_baseline_button.setEnabled(
@@ -1636,6 +1693,7 @@ class MainWindow(QMainWindow):
         self.solver_path_edit.setText(str(config.solver.executable_path))
         self.tcl_library_edit.setText(str(config.solver.tcl_library_path or ""))
         self.timeout_spin.setValue(float(config.solver.timeout))
+        self.output_dir_edit.setText(str(config.output_dir))
         self.area_spin.setValue(float(config.area))
         self.length_spin.setValue(float(config.length))
         self.current_template_path = config.material_template_path
@@ -1958,7 +2016,7 @@ class MainWindow(QMainWindow):
             material=material, loading=loading, experiment_path=experiment_path,
             displacement_column=self.displacement_combo.currentText() if experiment_path else None,
             force_column=self.force_combo.currentText() if experiment_path else None,
-            output_dir=ROOT / "outputs" / "runs", material_template_path=self.current_template_path,
+            output_dir=Path(self.output_dir_edit.text()).expanduser().resolve(), material_template_path=self.current_template_path,
             area=float(self.area_spin.value()), length=float(self.length_spin.value()),
             fitting=fitting, modeling=modeling,
         )

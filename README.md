@@ -2,6 +2,26 @@
 
 Python-first OpenSees material testing and material-parameter fitting tool.
 
+## Publish an executable brace
+
+After a complete experiment-backed calculation, use **发布支撑模型…** on the comparison
+page or **Ctrl+Shift+P**. Choose the force and length units, then save `.oasbrace` and
+import it on Structural analysis's component assembly page. The project page now
+stores an editable output directory.
+
+The v2 package preserves two axial terminals, nested explicit Series/Parallel groups,
+supported material laws (Elastic, Steel01, SelfCentering and MinMax wrappers), original
+curves, and input/result SHA-256 values. Topology groups become explicit branch elements
+and massless internal coordinates in Structural analysis; they are not silently replaced
+by a composite Series material. This is a fixed-axis, quasi-static internal mechanism
+interface, not general spatial contact or internal inertial dynamics. Unsupported material
+commands are rejected instead of replaced with a fitted curve.
+
+Changed inputs, changed results and incomplete loading runs cannot be published. After
+parameter fitting, rerun the full selected loading history with the fitted parameters before
+publishing. Area and length must be consistent with the declared units; A=L=1 may be used
+only when the material command is already an equivalent force–deformation law.
+
 The first version supports a practical manual-fitting loop:
 
 1. Select an OpenSees executable.

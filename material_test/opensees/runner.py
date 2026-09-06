@@ -114,6 +114,10 @@ def run_material_history(
         response = response.reshape(1, -1)
     if response.shape[1] < 2:
         raise RuntimeError(f"response file must contain at least two columns: {response_file}")
+    if len(response) != len(history) or not np.all(np.isfinite(response[:, :2])):
+        raise RuntimeError(f'计算未完成完整加载历程：应有 {len(history)} 点，实际 {len(response)} 点；不能发布不完整结果。')
+    if not np.allclose(response[:, 0], history, rtol=1e-8, atol=1e-9):
+        raise RuntimeError('计算位移与输入加载历程不一致；请检查收敛和输出文件。')
 
     return SimulationResult(
         displacement=response[:, 0],
