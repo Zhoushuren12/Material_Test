@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TwoStageIntegrationTests(unittest.TestCase):
-    @unittest.skipUnless((ROOT / "OpenSees.exe").exists(), "OpenSees.exe is not available")
+    @unittest.skipUnless((ROOT / "OS_terminal" / "OpenSees.exe").exists(), "OpenSees.exe is not available")
     def test_twostage_demo_runs_with_generic_workflow(self) -> None:
         config = load_project_config(ROOT / "examples" / "projects" / "twostage_demo.yaml")
         with tempfile.TemporaryDirectory() as tmp:
@@ -31,9 +31,9 @@ class TwoStageIntegrationTests(unittest.TestCase):
             self.assertLess(result.simulation.force.min(), -500.0)
             self.assertGreater(result.simulation.force.max(), 500.0)
 
-    @unittest.skipUnless((ROOT / "OpenSees.exe").exists(), "OpenSees.exe is not available")
+    @unittest.skipUnless((ROOT / "OS_terminal" / "OpenSees.exe").exists(), "OpenSees.exe is not available")
     def test_bundled_tcl_library_is_discovered_for_material_previews(self) -> None:
-        solver = SolverConfig(executable_path=ROOT / "OpenSees.exe")
+        solver = SolverConfig(executable_path=ROOT / "OS_terminal" / "OpenSees.exe")
         library = load_material_library()
 
         for entry_id in ("elastic", "steel01", "sma"):
@@ -50,9 +50,9 @@ class TwoStageIntegrationTests(unittest.TestCase):
                 self.assertGreater(len(curve.displacement), 2)
                 self.assertTrue(np.isfinite(curve.force).all())
 
-    @unittest.skipUnless((ROOT / "OpenSees.exe").exists(), "OpenSees.exe is not available")
+    @unittest.skipUnless((ROOT / "OS_terminal" / "OpenSees.exe").exists(), "OpenSees.exe is not available")
     def test_nonlinear_library_previews_are_not_straight_lines(self) -> None:
-        solver = SolverConfig(executable_path=ROOT / "OpenSees.exe")
+        solver = SolverConfig(executable_path=ROOT / "OS_terminal" / "OpenSees.exe")
         library = load_material_library()
 
         for entry_id in ("sma", "self_centering", "steel01", "steel02", "hysteretic"):

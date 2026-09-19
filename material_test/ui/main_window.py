@@ -1139,8 +1139,8 @@ class MainWindow(QMainWindow):
         """)
 
     def _load_initial_state(self) -> None:
-        self.solver_path_edit.setText(str(ROOT / "OpenSees.exe"))
-        self.tcl_library_edit.setText(str(ROOT / "lib" / "tcl8.6"))
+        self.solver_path_edit.setText(str(ROOT / "OS_terminal" / "OpenSees.exe"))
+        self.tcl_library_edit.setText(str(ROOT / "OS_terminal" / "lib" / "tcl8.6"))
         self.amplitudes_edit.setPlainText("0, 8, -8, 12, -12, 16, -16, 20, -20, 0")
         self._populate_material(self._empty_material_template())
         self.current_template_path = None

@@ -1,6 +1,6 @@
 solver:
-  executable_path: ../../OpenSees.exe
-  tcl_library_path: ../../lib/tcl8.6
+  executable_path: ../../OS_terminal/OpenSees.exe
+  tcl_library_path: ../../OS_terminal/lib/tcl8.6
   timeout: 120
 material_template: ../materials/nested_elastic.yaml
 loading:
