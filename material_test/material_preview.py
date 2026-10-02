@@ -25,6 +25,14 @@ class MaterialPreviewCurve:
 def preview_error_summary(error: Exception) -> str:
     """Return a compact UI message while callers retain the full diagnostic."""
     message = str(error)
+    if "Traceback (most recent call last):" in message:
+        # Workers send formatted tracebacks; the first line is only a heading.
+        # Read the exception after the final stack, including chained errors.
+        lines = message.rsplit("Traceback (most recent call last):", 1)[1].splitlines()
+        for index, line in enumerate(lines):
+            if line.strip() and not line[0].isspace():
+                message = "\n".join(lines[index:])
+                break
     lowered = message.lower()
     if "can't find a usable init.tcl" in lowered or "tcl initialization failed" in lowered:
         return "OpenSees 的 Tcl 运行库不可用，请在项目设置中检查 Tcl 库路径。"
@@ -49,6 +57,9 @@ _AMPLITUDES = {
     "Concrete02": (0.006, "compression"),
     "ViscoelasticGap": (0.004, "compression"),
     "TwoStage": (30.0, "symmetric"),
+    "Series": (0.012, "symmetric"),
+    "Parallel": (0.006, "symmetric"),
+    "MinMax": (0.006, "symmetric"),
 }
 
 
@@ -76,6 +87,8 @@ def calculate_material_preview(
     length: float = 1.0,
     displacement_history: np.ndarray | None = None,
     modeling: ModelingConfig | None = None,
+    material_mode: str = "stress_strain",
+    cancel_check=None,
 ) -> MaterialPreviewCurve:
     if material_type == "Viscous":
         return MaterialPreviewCurve(
@@ -97,6 +110,8 @@ def calculate_material_preview(
             area=area,
             length=length,
             modeling=modeling,
+            material_mode=material_mode,
+            cancel_check=cancel_check,
         )
     note = ""
     if material_type == "ViscoelasticGap":

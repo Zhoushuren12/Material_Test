@@ -25,8 +25,8 @@ class ComparisonPlotTests(unittest.TestCase):
         axes = figure.axes[0]
 
         self.assertEqual(axes.get_title(), "")
-        self.assertEqual(axes.get_xlabel(), "Displacement")
-        self.assertEqual(axes.get_ylabel(), "Force")
+        self.assertEqual(axes.get_xlabel(), "位移 [mm]")
+        self.assertEqual(axes.get_ylabel(), "力 [N]")
         self.assertEqual(axes.xaxis.label.get_fontsize(), 25.0)
         self.assertEqual(axes.yaxis.label.get_fontsize(), 25.0)
         self.assertEqual(axes.get_xticklabels()[0].get_fontsize(), 18.0)

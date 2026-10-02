@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QRegularExpression, Qt, QThread
+from PySide6.QtCore import QRegularExpression, Qt, QThread, QTimer
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtGui import QRegularExpressionValidator
 from PySide6.QtWidgets import (
@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QDialog, QDialogButtonBox,
     QInputDialog, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QSizePolicy, QSpinBox, QSplitter, QStackedWidget,
-    QStyle, QTabWidget, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
+    QDockWidget, QMenu, QProgressBar, QStyle, QTabWidget, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
 
 from material_test.domain import (
@@ -39,91 +39,29 @@ from material_test.ui.plot_canvas import (
 from material_test.ui.topology_editor import TopologyEditor
 from material_test.ui.workers import FitWorker, RunWorker
 from material_test.workflow import WorkflowResult
+from material_test.ui.project_session import ProjectSessionMixin
+from material_test.ui.fitting_workflow import FittingWorkflowMixin
+from material_test.ui.editors import MaterialTagSpinBox, CompactDoubleSpinBox
+from material_test.ui.pages.project import ProjectPage
+from material_test.ui.pages.loading import LoadingPage
+from material_test.ui.pages.material import MaterialPage
+from material_test.ui.pages.assembly import AssemblyPage
+from material_test.ui.pages.calibration import CalibrationPage
 
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TEMPLATE = ROOT / "examples" / "materials" / "twostage.yaml"
 DEFAULT_PROJECT = ROOT / "examples" / "projects" / "twostage_demo.yaml"
 PAGES = [
-    ("项目设置", "求解器与工程文件"),
-    ("材料库与本构", "可复用材料、参数与单材响应"),
-    ("支撑装配", "串并联拓扑、材料赋值与整体响应"),
-    ("加载与数据", "加载历程与试验曲线"),
-    ("计算与对比", "手动调参、基准曲线与试验对比"),
-    ("参数拟合", "参数边界、算法与拟合对比"),
+    ("项目与单位", "求解器、单位与本构输入模式"),
+    ("试验与加载", "试验可选 · 统一加载来源"),
+    ("材料", "添加材料、编辑参数与单材预览"),
+    ("支撑装配", "材料赋值与串并联拓扑"),
+    ("对比与标定", "手动调参、自动拟合与发布"),
 ]
 
 
-class MaterialTagSpinBox(QSpinBox):
-    """A spin box whose arrows move through the loaded material tags."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._tags: list[int] = []
-        self.lineEdit().setReadOnly(True)
-
-    def set_material_tags(self, tags: list[int], selected: int | None = None) -> None:
-        self._tags = sorted(set(int(tag) for tag in tags))
-        self.blockSignals(True)
-        if self._tags:
-            self.setRange(self._tags[0], self._tags[-1])
-            value = selected if selected in self._tags else self._tags[0]
-            self.setValue(value)
-        else:
-            self.setRange(1, 1)
-            self.setValue(1)
-        self.blockSignals(False)
-
-    def stepBy(self, steps: int) -> None:
-        if not self._tags:
-            return
-        try:
-            index = self._tags.index(int(self.value()))
-        except ValueError:
-            index = 0
-        index = max(0, min(len(self._tags) - 1, index + (1 if steps > 0 else -1)))
-        self.setValue(self._tags[index])
-
-    def stepEnabled(self) -> QAbstractSpinBox.StepEnabledFlag:
-        if not self._tags:
-            return QAbstractSpinBox.StepEnabledFlag.StepNone
-        flags = QAbstractSpinBox.StepEnabledFlag.StepNone
-        try:
-            index = self._tags.index(int(self.value()))
-        except ValueError:
-            return QAbstractSpinBox.StepEnabledFlag.StepUpEnabled
-        if index > 0:
-            flags |= QAbstractSpinBox.StepEnabledFlag.StepDownEnabled
-        if index < len(self._tags) - 1:
-            flags |= QAbstractSpinBox.StepEnabledFlag.StepUpEnabled
-        return flags
-
-
-class CompactDoubleSpinBox(QDoubleSpinBox):
-    """Compact numeric editor that accepts decimal and scientific notation."""
-
-    _number_expression = QRegularExpression(
-        r"[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d*)?"
-    )
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._scientific_validator = QRegularExpressionValidator(
-            self._number_expression,
-            self,
-        )
-
-    def textFromValue(self, value: float) -> str:
-        return f"{value:.12g}"
-
-    def valueFromText(self, text: str) -> float:
-        return float(text.strip())
-
-    def validate(self, text: str, position: int):
-        return self._scientific_validator.validate(text.strip(), position)
-
-
-class MainWindow(QMainWindow):
+class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Material Test · 材料测试与参数拟合")
@@ -144,10 +82,17 @@ class MainWindow(QMainWindow):
         self._updating_material_editor = False
         self._thread: QThread | None = None
         self._worker: RunWorker | FitWorker | None = None
+        self._loading_ui = True
+        self._project_dirty = False
+        self._generation = 0
+        self._auto_run_pending = False
+        self._source_badges = []
+        self._syncing_fit = False
         self._build_actions()
         self._build_ui()
         self._apply_style()
         self._load_initial_state()
+        self._initialize_session()
 
     def _build_actions(self) -> None:
         self.load_project_action = QAction("打开项目", self)
@@ -157,11 +102,14 @@ class MainWindow(QMainWindow):
         self.save_project_action.setShortcut("Ctrl+S")
         self.save_project_action.triggered.connect(self.save_project)
         file_menu = self.menuBar().addMenu("文件")
-        file_menu.addActions([self.load_project_action, self.save_project_action])
+        self.save_as_action = QAction("另存为…", self)
+        self.save_as_action.setShortcut("Ctrl+Shift+S")
+        self.save_as_action.triggered.connect(self.save_project_as)
+        file_menu.addActions([self.load_project_action, self.save_project_action, self.save_as_action])
         self.publish_brace_action = QAction('发布支撑模型到 Structural analysis…', self)
         self.publish_brace_action.setShortcut('Ctrl+Shift+P')
         self.publish_brace_action.triggered.connect(self.publish_brace)
-        file_menu.addAction(self.publish_brace_action)
+        self.addAction(self.publish_brace_action)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -185,10 +133,9 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.page_subtitle)
         self.pages = QStackedWidget()
         for builder in (
-            self._build_project_page, self._build_material_page, self._build_model_page,
-            self._build_loading_page, self._build_comparison_page, self._build_fitting_page,
+            ProjectPage, LoadingPage, MaterialPage, AssemblyPage, CalibrationPage,
         ):
-            self.pages.addWidget(builder())
+            self.pages.addWidget(builder(self))
         content_layout.addWidget(self.pages, 1)
         content_layout.addWidget(self._build_page_footer())
         body.addWidget(content, 1)
@@ -228,7 +175,7 @@ class MainWindow(QMainWindow):
     def _build_navigation(self) -> QWidget:
         nav = QFrame()
         nav.setObjectName("navigation")
-        nav.setFixedWidth(230)
+        nav.setFixedWidth(252)
         layout = QVBoxLayout(nav)
         layout.setContentsMargins(14, 22, 14, 18)
         label = QLabel("分析流程")
@@ -237,6 +184,8 @@ class MainWindow(QMainWindow):
         self.nav_list = QListWidget()
         self.nav_list.setObjectName("navList")
         self.nav_list.setFrameShape(QFrame.Shape.NoFrame)
+        self.nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav_list.setWordWrap(True)
         for index, (title, subtitle) in enumerate(PAGES, start=1):
             item = QListWidgetItem(f"{index:02d}   {title}\n       {subtitle}")
             item.setData(Qt.ItemDataRole.UserRole, index - 1)
@@ -261,486 +210,23 @@ class MainWindow(QMainWindow):
         self.next_button.setObjectName("primaryButton")
         self.next_button.clicked.connect(lambda: self._navigate_relative(1))
         layout.addWidget(self.page_counter)
+        layout.addWidget(self.run_state_label, 1)
+        self.run_state_label.show()
+        self.log_toggle_button = QPushButton("运行日志")
+        self.log_toggle_button.setCheckable(True)
+        self.log_toggle_button.toggled.connect(self.log_dock.setVisible)
+        self.log_dock.visibilityChanged.connect(self.log_toggle_button.setChecked)
+        layout.addWidget(self.log_toggle_button)
         layout.addStretch(1)
         layout.addWidget(self.previous_button)
         layout.addWidget(self.next_button)
         return footer
 
-    def _build_project_page(self) -> QWidget:
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        controls = QWidget()
-        layout = QVBoxLayout(controls)
-        layout.setContentsMargins(0, 0, 18, 0)
-        layout.setSpacing(12)
-        layout.addWidget(self._section_title("OpenSees 求解器"))
-        form = QFormLayout()
-        form.setHorizontalSpacing(18)
-        form.setVerticalSpacing(12)
-        self.solver_path_edit = QLineEdit()
-        self.tcl_library_edit = QLineEdit()
-        self.timeout_spin = QDoubleSpinBox()
-        self.timeout_spin.setRange(1.0, 3600.0)
-        self.timeout_spin.setValue(120.0)
-        self.timeout_spin.setSuffix(" s")
-        self.timeout_spin.setDecimals(1)
-        form.addRow("OpenSees", self._path_control(self.solver_path_edit, self.browse_solver, True))
-        form.addRow("Tcl 库", self._path_control(self.tcl_library_edit, self.browse_tcl_library, False))
-        form.addRow("超时时间", self.timeout_spin)
-        self.output_dir_edit = QLineEdit(str(ROOT / 'outputs' / 'runs'))
-        form.addRow('结果保存目录', self._path_control(self.output_dir_edit, self.browse_output_dir, False))
-        layout.addLayout(form)
-        layout.addSpacing(18)
-        layout.addWidget(self._section_title("试件几何"))
-        geometry = QFormLayout()
-        geometry.setHorizontalSpacing(18)
-        geometry.setVerticalSpacing(12)
-        self.area_spin = QDoubleSpinBox()
-        self.area_spin.setDecimals(6)
-        self.area_spin.setRange(1.0e-12, 1.0e12)
-        self.area_spin.setValue(1.0)
-        self.length_spin = QDoubleSpinBox()
-        self.length_spin.setDecimals(6)
-        self.length_spin.setRange(1.0e-12, 1.0e12)
-        self.length_spin.setValue(1.0)
-        geometry.addRow("默认面积", self.area_spin)
-        geometry.addRow("总长度", self.length_spin)
-        layout.addLayout(geometry)
-        layout.addStretch(1)
 
-        preview_panel = QWidget()
-        preview_layout = QVBoxLayout(preview_panel)
-        preview_layout.setContentsMargins(18, 0, 0, 0)
-        preview_layout.addWidget(self._section_title("当前项目示意"))
-        self.project_overview = SpecimenOverviewWidget()
-        preview_layout.addWidget(self.project_overview, 1)
-        self.solver_path_edit.textChanged.connect(self._refresh_project_overview)
-        self.area_spin.valueChanged.connect(self._refresh_project_overview)
-        self.length_spin.valueChanged.connect(self._refresh_project_overview)
-        self.area_spin.valueChanged.connect(
-            lambda value: self._mark_comparison_dirty("试件面积已修改")
-        )
-        self.length_spin.valueChanged.connect(
-            lambda value: self._mark_comparison_dirty("试件长度已修改")
-        )
-        self._refresh_project_overview()
-
-        splitter.addWidget(controls)
-        splitter.addWidget(preview_panel)
-        splitter.setSizes([520, 680])
-        return splitter
-
-    def _build_material_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(7)
-        template_header = QHBoxLayout()
-        template_header.setSpacing(8)
-        template_header.addWidget(self._section_title("材料资源"))
-        self.template_path_edit = QLineEdit()
-        self.template_path_edit.setReadOnly(True)
-        template_header.addWidget(
-            self._path_control(self.template_path_edit, self.browse_material_template, True), 1
-        )
-        library_button = QPushButton("打开材料库")
-        library_button.setObjectName("primaryButton")
-        library_button.clicked.connect(self.open_material_library)
-        template_header.addWidget(library_button)
-        layout.addLayout(template_header)
-        identity = QHBoxLayout()
-        self.material_name_edit = QLineEdit()
-        self.material_tag_spin = MaterialTagSpinBox()
-        self.material_tag_spin.setFixedWidth(150)
-        self.material_tag_spin.setToolTip("使用上下箭头切换已添加的材料 Tag")
-        self.material_tag_spin.valueChanged.connect(self._select_material_tag)
-        identity.addWidget(QLabel("材料名称"))
-        identity.addWidget(self.material_name_edit, 3)
-        identity.addWidget(QLabel("选择材料 Tag"))
-        identity.addWidget(self.material_tag_spin)
-        layout.addLayout(identity)
-
-        layout.addWidget(self._section_title("已定义的 OpenSees 材料命令"))
-        self.material_command_table = QTableWidget(0, 5)
-        self.material_command_table.setHorizontalHeaderLabels(
-            ["Tag", "材料类型", "OpenSees 命令", "装配使用", "操作"]
-        )
-        self.material_command_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.material_command_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.material_command_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.material_command_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.material_command_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self.material_command_table.verticalHeader().setVisible(False)
-        self.material_command_table.setAlternatingRowColors(True)
-        self.material_command_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.material_command_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.material_command_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.material_command_table.setMinimumHeight(104)
-        self.material_command_table.setMaximumHeight(148)
-        self.material_command_table.currentCellChanged.connect(
-            lambda row, column, previous_row, previous_column: self._select_material_command(row)
-        )
-        layout.addWidget(self.material_command_table)
-
-        detail_splitter = QSplitter(Qt.Orientation.Horizontal)
-        editor_panel = QWidget()
-        editor_layout = QVBoxLayout(editor_panel)
-        editor_layout.setContentsMargins(0, 0, 14, 0)
-        editor_layout.setSpacing(8)
-        self.selected_material_label = self._section_title("材料参数说明")
-        editor_layout.addWidget(self.selected_material_label)
-        self.selected_material_usage_label = QLabel("尚未分配到装配单元")
-        self.selected_material_usage_label.setObjectName("previewNote")
-        editor_layout.addWidget(self.selected_material_usage_label)
-        editor_layout.addWidget(QLabel("选中材料命令"))
-        self.material_command_edit = QPlainTextEdit()
-        self.material_command_edit.setReadOnly(True)
-        self.material_command_edit.setMinimumHeight(58)
-        self.material_command_edit.setMaximumHeight(76)
-        self.material_command_edit.setPlaceholderText("uniaxialMaterial ...")
-        editor_layout.addWidget(self.material_command_edit)
-        self.param_table = QTableWidget(0, 5)
-        self.param_table.setHorizontalHeaderLabels(["参数", "中文含义", "默认/当前值", "单位", "对曲线的作用"])
-        self.param_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.param_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.param_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.param_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.param_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        self.param_table.verticalHeader().setVisible(False)
-        self.param_table.setAlternatingRowColors(True)
-        self.param_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        editor_layout.addWidget(self.param_table, 1)
-
-        preview_panel = QWidget()
-        preview_layout = QVBoxLayout(preview_panel)
-        preview_layout.setContentsMargins(14, 0, 0, 0)
-        preview_layout.setSpacing(8)
-        preview_header = QHBoxLayout()
-        preview_header.addWidget(self._section_title("单个材料滞回曲线"))
-        preview_header.addStretch(1)
-        self.preview_protocol_combo = QComboBox()
-        self.preview_protocol_combo.addItem("材料标准循环", "standard")
-        self.preview_protocol_combo.addItem("当前加载协议", "current")
-        self.calculate_preview_button = QPushButton("计算曲线")
-        self.calculate_preview_button.setObjectName("primaryButton")
-        self.calculate_preview_button.clicked.connect(self.calculate_selected_material_preview)
-        preview_header.addWidget(self.preview_protocol_combo)
-        preview_header.addWidget(self.calculate_preview_button)
-        preview_layout.addLayout(preview_header)
-        self.material_preview_plot = HysteresisPreviewWidget()
-        self.material_preview_plot.setMinimumHeight(250)
-        preview_layout.addWidget(self.material_preview_plot, 1)
-        self.material_preview_note = QLabel()
-        self.material_preview_note.setWordWrap(True)
-        self.material_preview_note.setObjectName("previewNote")
-        preview_layout.addWidget(self.material_preview_note)
-
-        detail_splitter.addWidget(editor_panel)
-        detail_splitter.addWidget(preview_panel)
-        detail_splitter.setSizes([650, 520])
-        layout.addWidget(detail_splitter, 1)
-        return page
-
-    def _build_model_page(self) -> QWidget:
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.topology_editor = TopologyEditor()
-        self.topology_editor.changed.connect(self._on_topology_changed)
-
-        response_panel = QWidget()
-        response_layout = QVBoxLayout(response_panel)
-        response_layout.setContentsMargins(18, 0, 0, 0)
-        response_layout.setSpacing(8)
-        response_header = QHBoxLayout()
-        response_header.addWidget(self._section_title("支撑装配整体响应"))
-        response_header.addStretch(1)
-        self.model_preview_protocol_combo = QComboBox()
-        self.model_preview_protocol_combo.addItem("当前加载制度", "current")
-        self.model_preview_protocol_combo.addItem("材料标准循环", "standard")
-        self.calculate_model_preview_button = QPushButton("计算整体曲线")
-        self.calculate_model_preview_button.setObjectName("primaryButton")
-        self.calculate_model_preview_button.clicked.connect(self.calculate_model_preview)
-        response_header.addWidget(self.model_preview_protocol_combo)
-        response_header.addWidget(self.calculate_model_preview_button)
-        response_layout.addLayout(response_header)
-        self.model_assignment_label = QLabel("正在检查材料赋值…")
-        self.model_assignment_label.setObjectName("previewNote")
-        self.model_assignment_label.setWordWrap(True)
-        response_layout.addWidget(self.model_assignment_label)
-        self.model_preview_plot = HysteresisPreviewWidget()
-        self.model_preview_plot.clear("完成材料赋值后计算整体响应")
-        self.model_preview_plot.setMinimumHeight(330)
-        response_layout.addWidget(self.model_preview_plot, 1)
-        self.model_preview_note = QLabel("曲线由当前拓扑、材料参数和加载制度共同决定")
-        self.model_preview_note.setObjectName("previewNote")
-        self.model_preview_note.setWordWrap(True)
-        response_layout.addWidget(self.model_preview_note)
-
-        splitter.addWidget(self.topology_editor)
-        splitter.addWidget(response_panel)
-        splitter.setSizes([600, 600])
-        return splitter
-
-    def _build_loading_page(self) -> QWidget:
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        controls = QWidget()
-        controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(0, 0, 18, 0)
-        controls_layout.setSpacing(10)
-        controls_layout.addWidget(self._section_title("循环加载制度"))
-        loading_form = QFormLayout()
-        loading_form.setVerticalSpacing(9)
-        self.amplitudes_edit = QPlainTextEdit()
-        self.amplitudes_edit.setMinimumHeight(110)
-        self.amplitudes_edit.setMaximumHeight(140)
-        self.du_spin = QDoubleSpinBox()
-        self.du_spin.setDecimals(6)
-        self.du_spin.setRange(1.0e-9, 1.0e9)
-        self.du_spin.setValue(0.25)
-        loading_form.addRow("位移幅值", self.amplitudes_edit)
-        loading_form.addRow("位移增量 du", self.du_spin)
-        controls_layout.addLayout(loading_form)
-        controls_layout.addWidget(self._section_title("外部加载历史"))
-        history_form = QFormLayout()
-        history_form.setVerticalSpacing(9)
-        self.history_path_edit = QLineEdit()
-        self.history_column_combo = QComboBox()
-        self.append_zero_check = QCheckBox("在历史末尾补零")
-        history_form.addRow("文件", self._path_control(self.history_path_edit, self.browse_loading_history, True))
-        history_form.addRow("位移列", self.history_column_combo)
-        history_form.addRow("", self.append_zero_check)
-        controls_layout.addLayout(history_form)
-        controls_layout.addWidget(self._section_title("试验数据"))
-        experiment_form = QFormLayout()
-        experiment_form.setVerticalSpacing(9)
-        self.experiment_path_edit = QLineEdit()
-        self.displacement_combo = QComboBox()
-        self.force_combo = QComboBox()
-        experiment_form.addRow("数据文件", self._path_control(self.experiment_path_edit, self.browse_experiment_data, True))
-        experiment_form.addRow("位移列", self.displacement_combo)
-        experiment_form.addRow("力列", self.force_combo)
-        controls_layout.addLayout(experiment_form)
-        controls_layout.addStretch(1)
-
-        preview_panel = QWidget()
-        preview_layout = QVBoxLayout(preview_panel)
-        preview_layout.setContentsMargins(18, 0, 0, 0)
-        preview_layout.addWidget(self._section_title("加载与试验预览"))
-        self.loading_preview_tabs = QTabWidget()
-        self.loading_history_plot = StagePlotWidget()
-        self.experiment_preview_plot = StagePlotWidget()
-        self.loading_preview_tabs.addTab(self.loading_history_plot, "加载历程")
-        self.loading_preview_tabs.addTab(self.experiment_preview_plot, "试验滞回")
-        preview_layout.addWidget(self.loading_preview_tabs, 1)
-        self.loading_preview_note = QLabel("修改幅值或位移增量后，加载历程会自动更新")
-        self.loading_preview_note.setObjectName("previewNote")
-        preview_layout.addWidget(self.loading_preview_note)
-
-        self.amplitudes_edit.textChanged.connect(self._refresh_loading_preview)
-        self.du_spin.valueChanged.connect(self._refresh_loading_preview)
-        self.history_path_edit.textChanged.connect(self._refresh_loading_preview)
-        self.history_column_combo.currentIndexChanged.connect(self._refresh_loading_preview)
-        self.append_zero_check.toggled.connect(self._refresh_loading_preview)
-        self.experiment_path_edit.textChanged.connect(self._refresh_experiment_preview)
-        self.displacement_combo.currentIndexChanged.connect(self._refresh_experiment_preview)
-        self.force_combo.currentIndexChanged.connect(self._refresh_experiment_preview)
-        self.amplitudes_edit.textChanged.connect(
-            lambda: self._mark_comparison_dirty("加载制度已修改")
-        )
-        self.du_spin.valueChanged.connect(
-            lambda value: self._mark_comparison_dirty("加载制度已修改")
-        )
-        self.history_path_edit.textChanged.connect(
-            lambda text: self._mark_comparison_dirty("加载制度已修改")
-        )
-
-        splitter.addWidget(controls)
-        splitter.addWidget(preview_panel)
-        splitter.setSizes([490, 710])
-        return splitter
-
-    def _build_fitting_page(self) -> QWidget:
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        settings = QWidget()
-        layout = QVBoxLayout(settings)
-        layout.setContentsMargins(0, 0, 18, 0)
-        layout.setSpacing(10)
-        self.fit_algorithm_combo = QComboBox()
-        self.fit_algorithm_combo.addItem("差分进化 DE", "de")
-        self.fit_algorithm_combo.addItem("粒子群 PSO", "pso")
-        self.fit_max_evaluations_spin = QSpinBox()
-        self.fit_max_evaluations_spin.setRange(8, 100000)
-        self.fit_max_evaluations_spin.setValue(240)
-        self.fit_population_spin = QSpinBox()
-        self.fit_population_spin.setRange(2, 1000)
-        self.fit_population_spin.setValue(16)
-        self.fit_local_refine_check = QCheckBox("局部最小二乘精修")
-        self.fit_local_refine_check.setChecked(True)
-        self.fit_local_evaluations_spin = QSpinBox()
-        self.fit_local_evaluations_spin.setRange(1, 100000)
-        self.fit_local_evaluations_spin.setValue(120)
-        algorithm_form = QFormLayout()
-        algorithm_form.setVerticalSpacing(9)
-        algorithm_form.addRow("全局算法", self.fit_algorithm_combo)
-        algorithm_form.addRow("全局评估次数", self.fit_max_evaluations_spin)
-        algorithm_form.addRow("种群规模", self.fit_population_spin)
-        algorithm_form.addRow("局部评估次数", self.fit_local_evaluations_spin)
-        algorithm_form.addRow("", self.fit_local_refine_check)
-        layout.addLayout(algorithm_form)
-        layout.addWidget(self._section_title("待拟合参数"))
-        self.fit_table = QTableWidget(0, 5)
-        self.fit_table.setHorizontalHeaderLabels(["拟合", "参数", "下限", "上限", "尺度"])
-        self.fit_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.fit_table.verticalHeader().setVisible(False)
-        self.fit_table.setAlternatingRowColors(True)
-        layout.addWidget(self.fit_table, 1)
-        self.fit_page_button = QPushButton("开始参数拟合")
-        self.fit_page_button.setObjectName("primaryButton")
-        self.fit_page_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
-        self.fit_page_button.clicked.connect(self.start_fit)
-        layout.addWidget(self.fit_page_button)
-
-        preview_panel = QWidget()
-        preview_layout = QVBoxLayout(preview_panel)
-        preview_layout.setContentsMargins(18, 0, 0, 0)
-        preview_layout.setSpacing(8)
-        preview_layout.addWidget(self._section_title("拟合曲线对比"))
-        self.fitting_preview_plot = StagePlotWidget()
-        self.fitting_preview_plot.clear("导入试验数据后可查看曲线；拟合完成后显示最终对比")
-        self.fitting_preview_plot.setMinimumHeight(340)
-        preview_layout.addWidget(self.fitting_preview_plot, 1)
-        self.fitting_preview_status = QLabel("尚未运行拟合")
-        self.fitting_preview_status.setObjectName("previewNote")
-        self.fitting_preview_status.setWordWrap(True)
-        preview_layout.addWidget(self.fitting_preview_status)
-
-        splitter.addWidget(settings)
-        splitter.addWidget(preview_panel)
-        splitter.setSizes([520, 680])
-        return splitter
-
-    def _build_comparison_page(self) -> QWidget:
-        page = QWidget()
-        outer = QHBoxLayout(page)
-        outer.setContentsMargins(0, 0, 0, 0)
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-
-        controls = QWidget()
-        controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(0, 0, 14, 0)
-        controls_layout.setSpacing(9)
-        controls_layout.addWidget(self._section_title("手动调参"))
-        self.comparison_material_combo = QComboBox()
-        self.comparison_material_combo.currentIndexChanged.connect(
-            self._populate_comparison_parameters
-        )
-        controls_layout.addWidget(self.comparison_material_combo)
-        self.comparison_parameter_table = QTableWidget(0, 3)
-        self.comparison_parameter_table.setHorizontalHeaderLabels(
-            ["参数", "含义与单位", "当前值"]
-        )
-        self.comparison_parameter_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.comparison_parameter_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
-        )
-        self.comparison_parameter_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.comparison_parameter_table.verticalHeader().setVisible(False)
-        self.comparison_parameter_table.setAlternatingRowColors(True)
-        controls_layout.addWidget(self.comparison_parameter_table, 1)
-
-        comparison_protocol_form = QFormLayout()
-        self.comparison_protocol_combo = QComboBox()
-        self.comparison_protocol_combo.addItem("当前加载制度", "current")
-        self.comparison_protocol_combo.addItem("试验位移历程", "experiment")
-        self.comparison_protocol_combo.currentIndexChanged.connect(
-            lambda index: self._mark_comparison_dirty("计算加载来源已修改")
-        )
-        comparison_protocol_form.addRow("计算加载", self.comparison_protocol_combo)
-        controls_layout.addLayout(comparison_protocol_form)
-        self.run_button = QPushButton("计算当前模型")
-        self.run_button.setObjectName("primaryButton")
-        self.run_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
-        self.run_button.clicked.connect(self.start_run)
-        controls_layout.addWidget(self.run_button)
-        baseline_actions = QHBoxLayout()
-        self.set_baseline_button = QPushButton("设为基准")
-        self.set_baseline_button.setEnabled(False)
-        self.set_baseline_button.clicked.connect(self.set_current_as_baseline)
-        self.clear_baseline_button = QToolButton()
-        self.clear_baseline_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton)
-        )
-        self.clear_baseline_button.setToolTip("清除基准曲线")
-        self.clear_baseline_button.setEnabled(False)
-        self.clear_baseline_button.clicked.connect(self.clear_baseline)
-        baseline_actions.addWidget(self.set_baseline_button, 1)
-        baseline_actions.addWidget(self.clear_baseline_button)
-        controls_layout.addLayout(baseline_actions)
-        self.export_button = QPushButton("导出当前对比图")
-        self.export_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
-        self.export_button.clicked.connect(self.export_figure)
-        self.export_button.setEnabled(False)
-        controls_layout.addWidget(self.export_button)
-        self.publish_button = QPushButton('发布支撑模型…')
-        self.publish_button.setToolTip('保存两个轴向端口、显式内部装配及实验/计算来源，供 Structural analysis 导入')
-        self.publish_button.clicked.connect(self.publish_brace)
-        self.publish_button.setEnabled(False)
-        controls_layout.addWidget(self.publish_button)
-        self.run_state_label = QLabel("就绪")
-        self.run_state_label.setObjectName("runState")
-        self.run_state_label.setWordWrap(True)
-        controls_layout.addWidget(self.run_state_label)
-
-        result_panel = QWidget()
-        result_layout = QVBoxLayout(result_panel)
-        result_layout.setContentsMargins(14, 0, 0, 0)
-        result_layout.setSpacing(7)
-        result_layout.addWidget(self._section_title("曲线叠加"))
-        self.plot_widget = OverlayPlotWidget()
-        result_layout.addWidget(self.plot_widget, 1)
-        detail_tabs = QTabWidget()
-        metrics_panel = QWidget()
-        metrics_layout = QVBoxLayout(metrics_panel)
-        metrics_layout.setContentsMargins(8, 8, 8, 8)
-        self.comparison_metrics_table = QTableWidget(0, 7)
-        self.comparison_metrics_table.setHorizontalHeaderLabels(
-            ["曲线", "峰值力", "初始刚度", "滞回积分", "末点力", "RMSE", "NRMSE"]
-        )
-        self.comparison_metrics_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self.comparison_metrics_table.verticalHeader().setVisible(False)
-        self.comparison_metrics_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.comparison_metrics_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        metrics_layout.addWidget(self.comparison_metrics_table)
-        detail_tabs.addTab(metrics_panel, "对比指标")
-        log_panel = QWidget()
-        log_layout = QVBoxLayout(log_panel)
-        log_layout.setContentsMargins(0, 0, 0, 0)
-        log_header = QHBoxLayout()
-        log_header.addWidget(self._section_title("运行日志"))
-        log_header.addStretch(1)
-        clear_button = QToolButton()
-        clear_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
-        clear_button.setToolTip("清空日志")
-        clear_button.clicked.connect(self.clear_log)
-        log_header.addWidget(clear_button)
-        self.log_edit = QPlainTextEdit()
-        self.log_edit.setReadOnly(True)
-        self.log_edit.setMaximumBlockCount(2000)
-        log_layout.addLayout(log_header)
-        log_layout.addWidget(self.log_edit)
-        detail_tabs.addTab(log_panel, "运行日志")
-        detail_tabs.setMaximumHeight(190)
-        result_layout.addWidget(detail_tabs)
-
-        splitter.addWidget(controls)
-        splitter.addWidget(result_panel)
-        splitter.setSizes([390, 810])
-        outer.addWidget(splitter)
-        return page
+    def _fit_table_edited(self, *args):
+        if not self._syncing_fit:
+            self._mark_project_dirty()
+            self._validate_fit_inputs()
 
     @staticmethod
     def _section_title(text: str) -> QLabel:
@@ -777,7 +263,7 @@ class MainWindow(QMainWindow):
     def _navigate_to(self, index: int) -> None:
         if index < 0 or index >= len(PAGES):
             return
-        if index == 5:
+        if index == 4:
             self._sync_fit_table()
         self.pages.setCurrentIndex(index)
         self.page_title.setText(PAGES[index][0])
@@ -789,13 +275,12 @@ class MainWindow(QMainWindow):
             self.nav_list.setCurrentRow(index)
         if index == 0:
             self._refresh_project_overview()
-        elif index == 3:
+        elif index == 1:
             self._refresh_loading_preview()
             self._refresh_experiment_preview()
         elif index == 4:
             self._sync_comparison_materials()
             self._refresh_comparison_view()
-        elif index == 5:
             self._refresh_fitting_preview()
 
     def _navigate_relative(self, offset: int) -> None:
@@ -824,7 +309,7 @@ class MainWindow(QMainWindow):
             [(steps, history, "位移历程", "#1f5fae")],
             title="加载制度预览",
             x_label="加载步",
-            y_label="位移 / 应变",
+            y_label=f"位移 [{self.length_unit_combo.currentText()}]",
             zero_axes=True,
         )
         self.loading_preview_note.setText(
@@ -838,14 +323,9 @@ class MainWindow(QMainWindow):
         if not path_text or not self.displacement_combo.currentText() or not self.force_combo.currentText():
             self.experiment_preview_plot.clear("导入试验数据并选择位移列、力列")
             return
-        try:
-            experiment = load_experiment_data(
-                Path(path_text),
-                displacement_column=self.displacement_combo.currentText(),
-                force_column=self.force_combo.currentText(),
-            )
-        except Exception as exc:
-            self.experiment_preview_plot.clear(f"试验数据暂不可用\n{exc}")
+        experiment = self._comparison_experiment()
+        if experiment is None:
+            self.experiment_preview_plot.clear("试验数据暂不可用，请检查文件、数据列与换算系数")
             return
         self.experiment_preview_plot.update_series(
             [(experiment.displacement, experiment.force, "试验曲线", "#c2413b")],
@@ -895,12 +375,11 @@ class MainWindow(QMainWindow):
                 continue
             row = self.comparison_parameter_table.rowCount()
             self.comparison_parameter_table.insertRow(row)
-            meaning = parameter.description
-            if parameter.unit:
-                meaning = f"{meaning} [{parameter.unit}]" if meaning else parameter.unit
+            meaning = self._parameter_description(parameter)
             for column, value in (
                 (0, parameter.name),
                 (1, meaning),
+                (3, self._parameter_unit(parameter)),
             ):
                 item = QTableWidgetItem(value)
                 item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
@@ -930,11 +409,13 @@ class MainWindow(QMainWindow):
         current = self.current_result
         if not isinstance(current, (WorkflowResult, FitResult)):
             self.plot_widget.clear()
+            self.stale_notice.hide()
+            self.publish_button.setEnabled(False)
             self.comparison_metrics_table.setRowCount(0)
             self.set_baseline_button.setEnabled(False)
             self.clear_baseline_button.setEnabled(self.baseline_result is not None)
             self.export_button.setEnabled(False)
-            self.run_state_label.setText("等待计算当前模型")
+            self._set_status("等待计算当前模型")
             return
 
         baseline = self.baseline_result
@@ -951,28 +432,18 @@ class MainWindow(QMainWindow):
         self.set_baseline_button.setEnabled(True)
         self.clear_baseline_button.setEnabled(baseline_simulation is not None)
         self.export_button.setEnabled(True)
+        self.plot_widget.set_stale(self._comparison_dirty)
+        self.stale_notice.setVisible(self._comparison_dirty)
+        self.set_baseline_button.setEnabled(not self._comparison_dirty)
+        self.export_button.setEnabled(not self._comparison_dirty)
+        self.publish_button.setEnabled(not self._comparison_dirty and self._thread is None)
         if self._comparison_dirty:
-            self.run_state_label.setText("参数或模型已修改 · 当前曲线待重新计算")
+            self._set_status("参数或模型已修改 · 当前曲线待重新计算", "stale")
         elif baseline_simulation is not None:
-            self.run_state_label.setText("当前、基准与试验曲线已更新")
+            self._set_status("当前与基准曲线已更新", "complete")
         else:
-            self.run_state_label.setText("当前曲线已更新 · 尚未设置基准")
+            self._set_status("当前曲线已更新 · 尚未设置基准", "complete")
 
-    def _comparison_experiment(self) -> ExperimentData | None:
-        for result in (self.current_result, self.baseline_result):
-            if isinstance(result, (WorkflowResult, FitResult)) and result.experiment is not None:
-                return result.experiment
-        path_text = self.experiment_path_edit.text().strip()
-        if not path_text or not self.displacement_combo.currentText() or not self.force_combo.currentText():
-            return None
-        try:
-            return load_experiment_data(
-                Path(path_text),
-                displacement_column=self.displacement_combo.currentText(),
-                force_column=self.force_combo.currentText(),
-            )
-        except Exception:
-            return None
 
     def _update_comparison_metrics(self, experiment: ExperimentData | None) -> None:
         entries: list[tuple[str, np.ndarray, np.ndarray]] = []
@@ -996,14 +467,18 @@ class MainWindow(QMainWindow):
                 and np.allclose(displacement, experiment.displacement, rtol=1.0e-8, atol=1.0e-10)
             ):
                 errors = calculate_error_metrics(force, experiment.force)
+            elif (label != "试验" and experiment is not None and len(displacement) == len(experiment.displacement) + 1
+                  and np.isclose(displacement[0], 0.0)
+                  and np.allclose(displacement[1:], experiment.displacement, rtol=1e-8, atol=1e-10)):
+                errors = calculate_error_metrics(force[1:], experiment.force)
             values = (
                 label,
                 self._format_metric(metrics.peak_absolute_force),
                 self._format_metric(metrics.initial_stiffness),
                 self._format_metric(metrics.hysteretic_integral),
                 self._format_metric(metrics.residual_force),
-                self._format_metric(errors.rmse if errors else None),
-                self._format_metric(errors.normalized_rmse if errors else None),
+                self._format_metric(errors.rmse) if errors else ("不适用（无试验）" if experiment is None else ("—" if label == "试验" else "需用试验位移")),
+                self._format_metric(errors.normalized_rmse) if errors else ("不适用（无试验）" if experiment is None else ("—" if label == "试验" else "需用试验位移")),
             )
             row = self.comparison_metrics_table.rowCount()
             self.comparison_metrics_table.insertRow(row)
@@ -1016,7 +491,7 @@ class MainWindow(QMainWindow):
         return "—" if value is None or not np.isfinite(value) else f"{value:.6g}"
 
     def set_current_as_baseline(self) -> None:
-        if not isinstance(self.current_result, (WorkflowResult, FitResult)):
+        if not isinstance(self.current_result, (WorkflowResult, FitResult)) or self._comparison_dirty:
             return
         self.baseline_result = self.current_result
         self._append_log(f"已设置基准曲线：{self.current_result.run_dir}")
@@ -1029,12 +504,6 @@ class MainWindow(QMainWindow):
         self._append_log("已清除基准曲线")
         self._refresh_comparison_view()
 
-    def _mark_comparison_dirty(self, reason: str) -> None:
-        if not isinstance(self.current_result, (WorkflowResult, FitResult)):
-            return
-        self._comparison_dirty = True
-        if hasattr(self, "run_state_label"):
-            self.run_state_label.setText(f"{reason} · 当前曲线待重新计算")
 
     def _reset_comparison_results(self) -> None:
         self.current_result = None
@@ -1098,6 +567,7 @@ class MainWindow(QMainWindow):
         self.setFont(QFont("Microsoft YaHei UI", 9))
         self.setStyleSheet("""
             QMainWindow, QWidget { background: #f6f8fb; color: #172033; }
+            QLabel { background: transparent; }
             QMenuBar { background: #ffffff; border-bottom: 1px solid #dde3ec; padding: 2px 8px; }
             QMenuBar::item:selected, QMenu::item:selected { background: #eaf2ff; color: #174ea6; }
             #appHeader { background: #ffffff; border-bottom: 1px solid #dfe5ee; }
@@ -1134,7 +604,7 @@ class MainWindow(QMainWindow):
             #dangerTool { color: #b42318; border-color: #e0aaa5; }
             #dangerTool:hover { background: #fff1f0; border-color: #c85d55; }
             QSplitter::handle { background: #dfe5ee; }
-            #runState { color: #26734d; font-weight: 600; }
+            #runState { color: #64748b; font-weight: 600; }
             #previewNote { color: #64748b; padding: 4px 2px; }
         """)
 
@@ -1168,7 +638,13 @@ class MainWindow(QMainWindow):
     def browse_material_template(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择材料模板", str(ROOT), "YAML (*.yaml *.yml);;所有文件 (*)")
         if path:
-            self._load_template(Path(path))
+            try:
+                template = load_material_template(path)
+                if self._confirm_material_replacement(template):
+                    self._load_template(Path(path))
+                    self.topology_editor.clear_undefined_assignments()
+            except Exception as exc:
+                QMessageBox.critical(self, "导入材料模板", str(exc))
 
     def open_material_library(self) -> None:
         try:
@@ -1182,6 +658,7 @@ class MainWindow(QMainWindow):
             library,
             default_tag=max(existing_tags, default=0) + 1,
             existing_tags=existing_tags,
+            material_names={item.tag: item.material_type for item in self._material_commands},
             solver=self._solver_from_ui(),
             area=float(self.area_spin.value()),
             length=float(self.length_spin.value()),
@@ -1196,11 +673,15 @@ class MainWindow(QMainWindow):
         try:
             if dialog.selected_action == "replace":
                 template = entry.as_template(tag=dialog.selected_tag)
+                if not self._confirm_material_replacement(template):
+                    return
                 self._populate_material(template, selected_tag=dialog.selected_tag)
                 self.topology_editor.clear_undefined_assignments()
                 action_text = "替换为"
             else:
-                added = entry.instantiate(tag=dialog.selected_tag)
+                added = entry.instantiate(
+                    tag=dialog.selected_tag, references=dialog.selected_references,
+                )
                 if self._material_commands:
                     current = self._material_from_ui()
                     template = MaterialTemplate(
@@ -1237,6 +718,17 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(self._material_commands):
             return False
         command = self._material_commands[row]
+        dependents = [
+            item for item in self._material_commands
+            if item.tag != command.tag and command.tag in item.referenced_tags
+        ]
+        if dependents:
+            owners = "、".join(f"Tag {item.tag} · {item.material_type}" for item in dependents)
+            message = f"Tag {command.tag} 被组合材料 {owners} 引用，请先删除引用它的组合材料。"
+            self._append_log(message)
+            if confirm:
+                QMessageBox.warning(self, "材料仍被引用", message)
+            return False
         reference_count = self.topology_editor.count_material_references(command.tag)
         if confirm:
             if reference_count:
@@ -1366,6 +858,7 @@ class MainWindow(QMainWindow):
                 length=float(self.length_spin.value()),
                 displacement_history=history,
                 modeling=modeling,
+                material_mode=self.material_mode_combo.currentData(),
             )
         except Exception as exc:
             self.material_preview_plot.clear("曲线计算失败")
@@ -1374,7 +867,7 @@ class MainWindow(QMainWindow):
             return
 
         if curve.available:
-            self.material_preview_plot.update_curve(curve.displacement, curve.force, title=title)
+            self.material_preview_plot.update_curve(curve.displacement, curve.force, title=title, experiment=self._comparison_experiment())
             geometry_note = f"面积 {self.area_spin.value():g}，长度 {self.length_spin.value():g}"
             self.material_preview_note.setText("；".join(item for item in (geometry_note, curve.note) if item))
         else:
@@ -1406,6 +899,7 @@ class MainWindow(QMainWindow):
                 length=float(self.length_spin.value()),
                 displacement_history=history,
                 modeling=modeling,
+                material_mode=self.material_mode_combo.currentData(),
             )
         except Exception as exc:
             self.model_preview_plot.clear("整体曲线计算失败")
@@ -1418,6 +912,7 @@ class MainWindow(QMainWindow):
                 curve.displacement,
                 curve.force,
                 title="支撑装配整体滞回响应",
+                experiment=self._comparison_experiment(),
             )
             self.model_preview_note.setText(
                 f"OpenSees 计算结果 · 面积 {self.area_spin.value():g} · 总长度 {self.length_spin.value():g}"
@@ -1437,159 +932,30 @@ class MainWindow(QMainWindow):
             timeout=float(self.timeout_spin.value()),
         )
 
-    def _loading_protocol_from_ui(self) -> LoadingProtocol:
-        history_text = self.history_path_edit.text().strip()
-        if history_text:
-            return LoadingProtocol(
-                history_path=Path(history_text),
-                history_column=self.history_column_combo.currentText() or "0",
-                append_zero=self.append_zero_check.isChecked(),
-            )
-        return LoadingProtocol(amplitudes=self._parse_amplitudes(), du=float(self.du_spin.value()))
 
     def browse_experiment_data(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择试验数据", str(ROOT), "数据文件 (*.csv *.txt *.xlsx *.xls);;所有文件 (*)")
         if path:
+            self._experiment_sheet = 0
             self.experiment_path_edit.setText(path)
             self._load_experiment_columns(Path(path))
 
     def browse_loading_history(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择加载历史", str(ROOT), "数据文件 (*.csv *.txt *.xlsx *.xls);;所有文件 (*)")
         if path:
+            self._history_sheet = 0
             self.history_path_edit.setText(path)
             self._load_history_columns(Path(path))
 
-    def load_project(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "打开项目", str(ROOT), "YAML (*.yaml *.yml);;所有文件 (*)")
-        if not path:
-            return
-        try:
-            self._populate_from_config(load_project_config(path))
-        except Exception as exc:
-            QMessageBox.critical(self, "打开项目", str(exc))
-            return
-        self.current_project_path = Path(path).resolve()
-        self.project_label.setText(self.current_project_path.name)
-        self._append_log(f"已打开项目：{path}")
-
-    def save_project(self) -> None:
-        start = str(self.current_project_path or ROOT / "examples" / "projects")
-        path, _ = QFileDialog.getSaveFileName(self, "保存项目", start, "YAML (*.yaml *.yml)")
-        if not path:
-            return
-        try:
-            save_project_config(self._config_from_ui(require_ready=False), path)
-        except Exception as exc:
-            QMessageBox.critical(self, "保存项目", str(exc))
-            return
-        self.current_project_path = Path(path).resolve()
-        self.project_label.setText(self.current_project_path.name)
-        self._append_log(f"已保存项目：{path}")
-
-    def start_run(self) -> None:
-        try:
-            config = self._comparison_config_from_ui()
-        except Exception as exc:
-            QMessageBox.critical(self, "运行分析", str(exc))
-            return
-        self._set_running(True, "OpenSees 计算中…")
-        self._append_log("开始材料分析…")
-        self._thread = QThread(self)
-        self._worker = RunWorker(config)
-        self._start_worker(self._worker, self._run_finished)
-
-    def _comparison_config_from_ui(self) -> ProjectConfig:
-        config = self._config_from_ui(require_ready=True)
-        if (
-            hasattr(self, "comparison_protocol_combo")
-            and self.comparison_protocol_combo.currentData() == "experiment"
-        ):
-            if (
-                config.experiment_path is None
-                or config.displacement_column is None
-                or config.force_column is None
-            ):
-                raise ValueError("选择试验位移历程前，请先导入试验数据并指定位移列和力列")
-            config.loading = LoadingProtocol(
-                history_path=config.experiment_path,
-                history_column=config.displacement_column,
-                history_sheet=config.experiment_sheet,
-                append_zero=False,
-            )
-        return config
-
-    def start_fit(self) -> None:
-        try:
-            config = self._config_from_ui(require_fitting=True, require_ready=True)
-        except Exception as exc:
-            QMessageBox.critical(self, "参数拟合", str(exc))
-            return
-        self._set_running(True, "参数拟合中…")
-        self._append_log("开始参数拟合…")
-        self._thread = QThread(self)
-        self._worker = FitWorker(config)
-        self._start_worker(self._worker, self._fit_finished)
-
-    def _start_worker(self, worker: RunWorker | FitWorker, finished_callback) -> None:
-        assert self._thread is not None
-        worker.moveToThread(self._thread)
-        self._thread.started.connect(worker.run)
-        worker.finished.connect(finished_callback)
-        worker.failed.connect(self._run_failed)
-        worker.finished.connect(self._thread.quit)
-        worker.failed.connect(self._thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._thread_finished)
-        self._thread.start()
 
     def browse_output_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, '结果保存目录', self.output_dir_edit.text())
         if path:
             self.output_dir_edit.setText(path)
 
-    def publish_brace(self) -> None:
-        if isinstance(self.current_result, FitResult):
-            QMessageBox.information(self, '发布支撑模型', '拟合参数已回填。请先在“计算与对比”运行完整加载历程，再发布带完整输入与结果校验的支撑包。')
-            return
-        if self.current_result is None:
-            QMessageBox.information(self, '发布支撑模型', '请先用实际实验数据计算当前模型，再发布可执行支撑包。')
-            return
-        try:
-            from material_test.brace_export import build_brace_package
-            import json
-            config = self._config_from_ui()
-            package = build_brace_package(config, result_dir=self.current_result.run_dir)
-            dialog = QDialog(self)
-            dialog.setWindowTitle('支撑模型单位与接口')
-            layout = QVBoxLayout(dialog)
-            note = QLabel('接口：两端轴向连接。请选择当前输入数值采用的单位。\n面积需与长度单位的平方一致；本构按 A/L 转为支撑力—变形关系。')
-            note.setWordWrap(True)
-            layout.addWidget(note)
-            form = QFormLayout()
-            force = QComboBox(); force.addItems(['N', 'kN', 'MN'])
-            length = QComboBox(); length.addItems(['mm', 'cm', 'm'])
-            form.addRow('力', force); form.addRow('长度 / 位移', length)
-            layout.addLayout(form)
-            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-            buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
-            layout.addWidget(buttons)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                return
-            package = build_brace_package(config, result_dir=self.current_result.run_dir,
-                                          force_unit=force.currentText(), displacement_unit=length.currentText())
-            path, _ = QFileDialog.getSaveFileName(self, '发布支撑模型', str(self.current_result.run_dir / 'support.oasbrace'), '支撑模型包 (*.oasbrace)')
-            if not path:
-                return
-            Path(path).write_text(json.dumps(package, ensure_ascii=False, indent=2), encoding='utf-8')
-            self._append_log(f'已发布支撑包：{path}。在 Structural analysis → 组件装配 → 导入支撑模型中打开。')
-            QMessageBox.information(self, '支撑模型已发布', f'已保存两个轴向端口、可执行本构、试验与计算来源。\n{path}\n在 Structural analysis 的组件装配页导入后执行匹配检查。')
-        except (ValueError, OSError, KeyError) as exc:
-            QMessageBox.warning(self, '无法发布支撑模型', str(exc))
 
     def export_figure(self) -> None:
-        if self.current_result is None:
+        if self.current_result is None or self._comparison_dirty:
             QMessageBox.information(self, "导出当前对比图", "当前没有可导出的计算结果。")
             return
         start = self.current_result.run_dir / "current_comparison.png"
@@ -1615,6 +981,7 @@ class MainWindow(QMainWindow):
             self.current_result.simulation,
             experiment=self._comparison_experiment(),
             baseline=baseline,
+            force_unit=self.force_unit_combo.currentText(), length_unit=self.length_unit_combo.currentText(),
         )
         self._append_log(f"已导出当前对比图：{output_path}")
 
@@ -1628,57 +995,6 @@ class MainWindow(QMainWindow):
         for row in rows:
             self.param_table.removeRow(row)
 
-    def _run_finished(self, result: WorkflowResult) -> None:
-        self.current_result = result
-        self._comparison_dirty = False
-        self._append_log(f"分析完成：{result.run_dir}")
-        self._append_log(f"叠加曲线：{result.figure_file}")
-        if result.simulation.stdout.strip():
-            self._append_log(result.simulation.stdout.strip())
-        if result.simulation.stderr.strip():
-            self._append_log(result.simulation.stderr.strip())
-        self.run_state_label.setText("分析完成")
-        self._refresh_comparison_view()
-        self._refresh_fitting_preview()
-
-    def _fit_finished(self, result: FitResult) -> None:
-        self.current_result = result
-        for parameter in result.fitted_material.parameters:
-            if parameter.name in self._material_parameters:
-                self._set_material_parameter_value(parameter.name, parameter.value)
-        self._comparison_dirty = False
-        self._append_log(f"拟合完成：{result.run_dir}")
-        self._append_log(f"算法：{result.global_algorithm}；全局 {result.global_evaluations} 次；局部 {result.local_evaluations} 次")
-        self._append_log(f"归一化 RMSE：{result.metrics.normalized_rmse:.6g}")
-        self._append_log(f"拟合材料：{result.material_file}")
-        self.run_state_label.setText("拟合完成")
-        self._refresh_comparison_view()
-        self._refresh_fitting_preview()
-
-    def _run_failed(self, message: str) -> None:
-        self._append_log(message)
-        QMessageBox.critical(self, "运行失败", preview_error_summary(RuntimeError(message)))
-        self.run_state_label.setText("运行失败")
-
-    def _thread_finished(self) -> None:
-        self._set_running(False, self.run_state_label.text())
-        self._thread = None
-        self._worker = None
-
-    def _set_running(self, running: bool, text: str) -> None:
-        self.publish_button.setEnabled(not running and self.current_result is not None)
-        self.publish_brace_action.setEnabled(not running)
-        self.run_button.setEnabled(not running)
-        self.fit_page_button.setEnabled(not running)
-        self.set_baseline_button.setEnabled(
-            not running and isinstance(self.current_result, (WorkflowResult, FitResult))
-        )
-        self.clear_baseline_button.setEnabled(not running and self.baseline_result is not None)
-        self.export_button.setEnabled(
-            not running and isinstance(self.current_result, (WorkflowResult, FitResult))
-        )
-        self.run_state_label.setText(text)
-        self.statusBar().showMessage(text)
 
     def _load_template(self, path: Path) -> None:
         template = load_material_template(path)
@@ -1689,7 +1005,31 @@ class MainWindow(QMainWindow):
         self._append_log(f"已加载材料模板：{path}")
 
     def _populate_from_config(self, config: ProjectConfig) -> None:
+        previous = self._loading_ui
+        self._loading_ui = True
+        self._auto_timer.stop()
+        self._auto_run_pending = False
+        self._last_fit_original = {}
+        self.undo_fit_button.setEnabled(False)
+        self._experiment_sheet = config.experiment_sheet
+        self._history_sheet = config.loading.history_sheet
+        self.fit_table.blockSignals(True)
+        self.fit_table.setRowCount(0)
+        self.fit_table.blockSignals(False)
+        try:
+            self._populate_project_fields(config)
+        finally:
+            self._loading_ui = previous
+        self._update_navigation_states()
+
+    def _populate_project_fields(self, config: ProjectConfig) -> None:
         self._reset_comparison_results()
+        self._select_combo_text(self.force_unit_combo, config.force_unit)
+        self._select_combo_text(self.length_unit_combo, config.length_unit)
+        self._select_combo_data(self.material_mode_combo, config.material_mode)
+        self.experiment_displacement_scale_spin.setValue(config.experiment_displacement_scale)
+        self.experiment_force_scale_spin.setValue(config.experiment_force_scale)
+        self.history_scale_spin.setValue(config.loading.history_scale)
         self.solver_path_edit.setText(str(config.solver.executable_path))
         self.tcl_library_edit.setText(str(config.solver.tcl_library_path or ""))
         self.timeout_spin.setValue(float(config.solver.timeout))
@@ -1714,6 +1054,14 @@ class MainWindow(QMainWindow):
             self._select_combo_text(self.force_combo, config.force_column)
         self._sync_fit_table()
         self._populate_fitting(config.fitting)
+        source = config.loading.source
+        if source == "auto": source = "external" if config.loading.history_path else "amplitudes"
+        self._select_combo_data(self.loading_source_combo, source)
+        self._units_changed(mark=False)
+        self.area_spin.setEnabled(config.material_mode != "force_deformation")
+        self.length_spin.setEnabled(config.material_mode != "force_deformation")
+        self.topology_editor.force_deformation_mode = config.material_mode == "force_deformation"
+        self.topology_editor.area_spin.setEnabled(config.material_mode != "force_deformation")
         self._update_model_status()
         self._update_material_usage()
         self._refresh_project_overview()
@@ -1748,7 +1096,7 @@ class MainWindow(QMainWindow):
             self.material_command_table.insertRow(row)
             self.material_command_table.setItem(row, 0, QTableWidgetItem(str(command.tag)))
             self.material_command_table.setItem(row, 1, QTableWidgetItem(command.material_type))
-            self.material_command_table.setItem(row, 2, QTableWidgetItem(command.source))
+            self.material_command_table.setItem(row, 2, QTableWidgetItem(command.rendered))
             references = self.topology_editor.count_material_references(command.tag)
             self.material_command_table.setItem(
                 row,
@@ -1801,13 +1149,13 @@ class MainWindow(QMainWindow):
         self._updating_material_editor = True
         self.material_command_table.selectRow(row)
         self.material_tag_spin.setValue(command.tag)
-        self.material_command_edit.setPlainText(command.source)
+        self.material_command_edit.setPlainText(command.rendered)
         self.selected_material_label.setText(f"Tag {command.tag} · {command.material_type} 参数说明")
         references = self.topology_editor.count_material_references(command.tag)
         self.selected_material_usage_label.setText(
-            f"已分配给 {references} 个装配单元 · 参数请在第 5 步“计算与对比”中修改"
+            f"已分配给 {references} 个装配单元 · 可在此编辑，与对比页同步"
             if references
-            else "尚未分配到装配单元 · 参数请在第 5 步“计算与对比”中修改"
+            else "尚未分配到装配单元 · 可在此编辑，与对比页同步"
         )
         self.param_table.setRowCount(0)
         for parameter_name in command.parameter_names:
@@ -1834,7 +1182,7 @@ class MainWindow(QMainWindow):
     def _append_parameter_row(self, parameter: ParameterSpec) -> None:
         row = self.param_table.rowCount()
         self.param_table.insertRow(row)
-        values = (parameter.name, parameter.description, parameter.unit, parameter.effect)
+        values = (parameter.name, self._parameter_description(parameter), self._parameter_unit(parameter), parameter.effect)
         for column, value in ((0, values[0]), (1, values[1]), (3, values[2]), (4, values[3])):
             item = QTableWidgetItem(value)
             item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
@@ -1850,9 +1198,8 @@ class MainWindow(QMainWindow):
         )
         editor.setValue(parameter.value)
         editor.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        editor.setReadOnly(True)
-        editor.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        editor.setToolTip("参数修改已集中到第 5 步“计算与对比”")
+        editor.setReadOnly(False)
+        editor.setToolTip("材料页与对比页同步修改；支持科学计数法")
         editor.setMinimumWidth(120)
         editor.valueChanged.connect(
             lambda value, name=parameter.name: self._set_material_parameter_value(name, value)
@@ -1867,9 +1214,19 @@ class MainWindow(QMainWindow):
             parameter.value = new_value
             self._sync_parameter_value_widgets(name, new_value)
             if hasattr(self, "model_preview_plot"):
-                self.model_preview_plot.clear("材料参数已修改，点击重新计算整体响应")
+                self.model_preview_plot.set_stale(True)
                 self.model_preview_note.setText("待更新 · 当前整体曲线已失效")
             self._mark_comparison_dirty("材料参数已修改")
+            rendered = parse_material_commands(MaterialTemplate(name="current", command="\n".join(self._material_lines),
+                tag=self._material_template_tag, parameters=list(self._material_parameters.values())))
+            self._material_commands = rendered
+            for row, command in enumerate(rendered):
+                self.material_command_table.item(row, 2).setText(command.rendered)
+                if row == self._selected_material_row:
+                    self.material_command_edit.setPlainText(command.rendered)
+            for row in range(self.fit_table.rowCount()):
+                if self._table_text(row, 1, self.fit_table) == name and self.fit_table.item(row, 5):
+                    self.fit_table.blockSignals(True); self.fit_table.item(row, 5).setText(f"{new_value:g}"); self.fit_table.blockSignals(False)
 
     def _sync_parameter_value_widgets(self, name: str, value: float) -> None:
         for table, name_column, value_column in (
@@ -1900,6 +1257,8 @@ class MainWindow(QMainWindow):
             self._set_material_parameter_value(name, editor.value())
 
     def _sync_fit_table(self) -> None:
+        self._syncing_fit = True
+        self.fit_table.blockSignals(True)
         self._commit_selected_parameter_values()
         existing: dict[str, tuple[bool, str, str, str]] = {}
         for row in range(self.fit_table.rowCount()):
@@ -1916,12 +1275,11 @@ class MainWindow(QMainWindow):
             parameter = self._material_parameters.get(name)
             if parameter is None:
                 continue
-            checked, min_text, max_text, scale_value = existing.get(name, (
-                False,
-                "" if parameter.min is None else f"{parameter.min:g}",
-                "" if parameter.max is None else f"{parameter.max:g}",
-                "linear",
-            ))
+            low, high = sorted((parameter.value * 0.5, parameter.value * 2.0))
+            if low == high: low, high = -1.0, 1.0
+            if parameter.min is not None: low = max(low, parameter.min)
+            if parameter.max is not None: high = min(high, parameter.max)
+            checked, min_text, max_text, scale_value = existing.get(name, (False, f"{low:g}", f"{high:g}", "linear"))
             row = self.fit_table.rowCount()
             self.fit_table.insertRow(row)
             select_item = QTableWidgetItem()
@@ -1938,8 +1296,16 @@ class MainWindow(QMainWindow):
             scale_combo.addItem("对数", "log")
             self._select_combo_data(scale_combo, scale_value)
             self.fit_table.setCellWidget(row, 4, scale_combo)
+            scale_combo.currentIndexChanged.connect(self._fit_table_edited)
+            current_item = QTableWidgetItem(f"{parameter.value:g}")
+            current_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            self.fit_table.setItem(row, 5, current_item)
+        self.fit_table.blockSignals(False)
+        self._syncing_fit = False
+        self._validate_fit_inputs()
 
     def _populate_fitting(self, fitting: FitConfig | None) -> None:
+        self._fit_options = {"loss": fitting.loss, "f_scale": fitting.f_scale, "seed": fitting.seed} if fitting else {}
         for row in range(self.fit_table.rowCount()):
             self.fit_table.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
         if fitting is None:
@@ -1965,14 +1331,20 @@ class MainWindow(QMainWindow):
         self._load_columns(path, self.displacement_combo, self.force_combo)
         self._select_best_column(self.displacement_combo, ["disp", "deform", "u", "x"])
         self._select_best_column(self.force_combo, ["force", "load", "f", "y"])
+        if not self._loading_ui:
+            self._select_combo_data(self.loading_source_combo, "experiment")
+        self._update_source_labels()
 
     def _load_history_columns(self, path: Path) -> None:
         self._load_columns(path, self.history_column_combo)
         self._select_best_column(self.history_column_combo, ["disp", "deform", "u", "x", "0"])
+        if not self._loading_ui:
+            self._select_combo_data(self.loading_source_combo, "external")
 
     def _load_columns(self, path: Path, *combos: QComboBox) -> None:
         try:
-            columns = list_data_columns(path)
+            sheet = getattr(self, "_experiment_sheet", 0) if combos and combos[0] is self.displacement_combo else getattr(self, "_history_sheet", 0)
+            columns = list_data_columns(path, sheet_name=sheet)
         except Exception as exc:
             QMessageBox.critical(self, "数据列", str(exc))
             return
@@ -1991,20 +1363,15 @@ class MainWindow(QMainWindow):
             raise ValueError("必须选择 OpenSees 可执行文件")
         experiment_text = self.experiment_path_edit.text().strip()
         experiment_path = Path(experiment_text) if experiment_text else None
-        history_text = self.history_path_edit.text().strip()
-        if history_text:
-            loading = LoadingProtocol(
-                history_path=Path(history_text), history_column=self.history_column_combo.currentText() or "0",
-                append_zero=self.append_zero_check.isChecked(),
-            )
-        else:
-            loading = LoadingProtocol(amplitudes=self._parse_amplitudes(), du=float(self.du_spin.value()))
+        loading = self._loading_protocol_from_ui()
         material = self._material_from_ui()
         if require_ready and not self._material_commands:
             raise ValueError("材料资源为空，请先从材料库添加至少一个材料")
         modeling = self.topology_editor.modeling(require_assigned=require_ready)
         self._sync_fit_table()
         fitting = self._fitting_from_ui(material)
+        if fitting is not None and require_fitting:
+            fitting.validate()
         if require_fitting and fitting is None:
             raise ValueError("请至少选择一个待拟合参数")
         tcl_text = self.tcl_library_edit.text().strip()
@@ -2016,9 +1383,14 @@ class MainWindow(QMainWindow):
             material=material, loading=loading, experiment_path=experiment_path,
             displacement_column=self.displacement_combo.currentText() if experiment_path else None,
             force_column=self.force_combo.currentText() if experiment_path else None,
+            experiment_sheet=getattr(self, "_experiment_sheet", 0),
             output_dir=Path(self.output_dir_edit.text()).expanduser().resolve(), material_template_path=self.current_template_path,
             area=float(self.area_spin.value()), length=float(self.length_spin.value()),
             fitting=fitting, modeling=modeling,
+            force_unit=self.force_unit_combo.currentText(), length_unit=self.length_unit_combo.currentText(),
+            material_mode=self.material_mode_combo.currentData(),
+            experiment_displacement_scale=self.experiment_displacement_scale_spin.value(),
+            experiment_force_scale=self.experiment_force_scale_spin.value(),
         )
 
     def _material_from_ui(self) -> MaterialTemplate:
@@ -2076,6 +1448,7 @@ class MainWindow(QMainWindow):
             population_size=int(self.fit_population_spin.value()),
             local_refine=self.fit_local_refine_check.isChecked(),
             local_max_evaluations=int(self.fit_local_evaluations_spin.value()),
+            **getattr(self, "_fit_options", {}),
         )
 
     def _parse_amplitudes(self) -> list[float]:
@@ -2124,7 +1497,7 @@ class MainWindow(QMainWindow):
         self._update_material_usage()
         self._mark_comparison_dirty("支撑装配已修改")
         if hasattr(self, "model_preview_plot"):
-            self.model_preview_plot.clear("拓扑或材料赋值已修改，点击重新计算")
+            self.model_preview_plot.set_stale(True)
             self.model_preview_note.setText("待更新 · 当前整体曲线已失效")
 
     def _update_material_usage(self) -> None:

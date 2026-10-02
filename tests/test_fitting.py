@@ -30,8 +30,9 @@ class FittingTests(unittest.TestCase):
 
             for algorithm in ("de", "pso"):
                 config = self._config(root, data_file, algorithm)
+                progress = []
                 with patch("material_test.fitting.run_material_history", side_effect=self._fake_runner):
-                    result = fit_project(config, run_dir=root / algorithm)
+                    result = fit_project(config, run_dir=root / algorithm, progress=lambda *event: progress.append(event))
 
                 self.assertAlmostEqual(result.fitted_material.parameter_values["k"], 10.0, places=5)
                 self.assertLess(result.metrics.normalized_rmse, 1.0e-6)
@@ -39,6 +40,8 @@ class FittingTests(unittest.TestCase):
                 self.assertTrue(result.summary_file.exists())
                 self.assertTrue(result.figure_file.exists())
                 self.assertGreater(result.global_evaluations, 0)
+                self.assertEqual(progress[-1][0], result.total_evaluations)
+                self.assertTrue(np.isfinite(progress[-1][2]))
 
     @staticmethod
     def _config(root: Path, data_file: Path, algorithm: str) -> ProjectConfig:

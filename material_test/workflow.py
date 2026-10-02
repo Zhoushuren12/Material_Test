@@ -22,7 +22,7 @@ class WorkflowResult:
     simulation_csv: Path
 
 
-def run_project(config: ProjectConfig, *, run_dir: Path | None = None) -> WorkflowResult:
+def run_project(config: ProjectConfig, *, run_dir: Path | None = None, cancel_check=None) -> WorkflowResult:
     from material_test.brace_export import input_identity, checksum
     import json
     import hashlib
@@ -41,6 +41,8 @@ def run_project(config: ProjectConfig, *, run_dir: Path | None = None) -> Workfl
         area=config.area,
         length=config.length,
         modeling=config.modeling,
+        material_mode=config.material_mode,
+        cancel_check=cancel_check,
     )
 
     simulation_csv = run_dir / "simulation_curve.csv"
@@ -51,7 +53,7 @@ def run_project(config: ProjectConfig, *, run_dir: Path | None = None) -> Workfl
         header="displacement,force",
         comments="",
     )
-    figure_file = save_overlay_plot(run_dir / "overlay.png", simulation, experiment)
+    figure_file = save_overlay_plot(run_dir / "overlay.png", simulation, experiment, force_unit=config.force_unit, length_unit=config.length_unit)
     if checksum(input_identity(config)) != checksum(identity):
         raise ValueError('计算期间输入发生变化，请重新计算以建立可靠的实验与计算来源')
     (run_dir / 'input-manifest.json').write_text(
@@ -78,6 +80,8 @@ def _load_optional_experiment(config: ProjectConfig) -> ExperimentData | None:
         displacement_column=config.displacement_column,
         force_column=config.force_column,
         sheet_name=config.experiment_sheet,
+        displacement_scale=config.experiment_displacement_scale,
+        force_scale=config.experiment_force_scale,
     )
 
 

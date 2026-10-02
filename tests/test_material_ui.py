@@ -33,6 +33,7 @@ class MaterialSelectionUiTests(unittest.TestCase):
         self.window.topology_editor.set_root(TopologyNode.material(1, name="E01"))
 
     def tearDown(self) -> None:
+        self.window._project_dirty = False
         self.window.close()
 
     def test_tag_arrows_switch_material_and_preserve_edits(self) -> None:
@@ -215,9 +216,9 @@ class MaterialSelectionUiTests(unittest.TestCase):
         self.window.du_spin.setValue(0.25)
         self.window._refresh_loading_preview()
 
-        axes = self.window.loading_history_plot.figure.axes[0]
-        self.assertEqual(len(axes.lines), 3)  # history plus horizontal and vertical zero axes
-        values = axes.lines[0].get_ydata()
+        curves = self.window.loading_history_plot.plot_widget.listDataItems()
+        self.assertEqual(len(curves), 1)
+        values = curves[0].getData()[1]
         self.assertAlmostEqual(float(max(values)), 1.0)
         self.assertAlmostEqual(float(min(values)), -1.0)
 
@@ -245,6 +246,50 @@ class MaterialSelectionUiTests(unittest.TestCase):
         self.assertNotIn("stdout", self.window.material_preview_note.text())
         self.assertIn(detail, self.window.log_edit.toPlainText())
 
+    def test_worker_traceback_summary_reports_exception_instead_of_heading(self) -> None:
+        message = (
+            'Traceback (most recent call last):\n'
+            '  File "runner.py", line 10, in run_material_history\n'
+            '    raise RuntimeError(message)\n'
+            'RuntimeError: 计算未完成完整加载历程：应有 897 点，实际 1 点。\n'
+            'stdout:\nAnalysis failed at step 0\nstderr:\nfailed to converge\n'
+        )
+        summary = preview_error_summary(RuntimeError(message))
+        self.assertIn("897", summary)
+        self.assertIn("实际 1 点", summary)
+        self.assertNotIn("Traceback", summary)
+        self.assertNotIn("stdout", summary)
+
+    def test_chained_traceback_reports_final_exception(self) -> None:
+        message = (
+            'Traceback (most recent call last):\n'
+            '  File "example.py", line 1, in run\n'
+            '    raise KeyError("source")\nKeyError: source\n\n'
+            'The above exception was the direct cause of the following exception:\n\n'
+            'Traceback (most recent call last):\n'
+            '  File "example.py", line 2, in run\n'
+            '    raise ValueError("invalid material parameter") from error\n'
+            'ValueError: invalid material parameter\n'
+        )
+        self.assertEqual(
+            preview_error_summary(RuntimeError(message)),
+            "计算失败：ValueError: invalid material parameter",
+        )
+
+    def test_failure_state_is_updated_before_modal_dialog(self) -> None:
+        message = "Traceback (most recent call last):\n  File runner.py\nValueError: invalid material parameter\n"
+        self.window._set_running(True, "OpenSees 计算中…")
+
+        def check_dialog(parent, title, summary):
+            self.assertEqual(parent.run_state_label.text(), "运行失败")
+            self.assertIn("#b91c1c", parent.run_state_label.styleSheet())
+            self.assertIn("invalid material parameter", summary)
+            self.assertIn(message.strip(), parent.log_edit.toPlainText())
+
+        with patch("material_test.ui.main_window.QMessageBox.critical", side_effect=check_dialog) as dialog:
+            self.window._run_failed(message)
+        dialog.assert_called_once()
+
     def test_library_preview_status_distinguishes_failures_from_transient_materials(self) -> None:
         library = load_material_library()
         failed = MaterialPreviewCurve(None, None, "OpenSees 计算失败")
@@ -259,8 +304,9 @@ class MaterialSelectionUiTests(unittest.TestCase):
         )
 
     def test_comparison_page_replaces_standalone_results_page(self) -> None:
-        self.assertEqual(PAGES[4][0], "计算与对比")
-        self.assertEqual(PAGES[5][0], "参数拟合")
+        self.assertEqual(PAGES[4][0], "对比与标定")
+        self.assertEqual(len(PAGES), 5)
+        self.assertEqual(self.window.calibration_tabs.count(), 2)
         self.assertNotIn("运行结果", [title for title, subtitle in PAGES])
 
     def test_comparison_parameter_editor_updates_material_definition(self) -> None:
@@ -274,7 +320,7 @@ class MaterialSelectionUiTests(unittest.TestCase):
 
         self.assertEqual(self.window._material_from_ui().parameter_values["m1_Fy"], 420.0)
         self.assertEqual(self.window.param_table.cellWidget(0, 2).value(), 420.0)
-        self.assertTrue(self.window.param_table.cellWidget(0, 2).isReadOnly())
+        self.assertFalse(self.window.param_table.cellWidget(0, 2).isReadOnly())
         self.assertFalse(editor.isReadOnly())
 
     def test_comparison_can_use_experiment_displacement_as_loading(self) -> None:
@@ -317,13 +363,15 @@ class MaterialSelectionUiTests(unittest.TestCase):
             "current",
         )
 
-        self.window._run_finished(baseline)
-        self.window.set_current_as_baseline()
-        self.window._run_finished(current)
+        self.window._run_generation = self.window._generation
+        with patch.object(self.window, "_comparison_experiment", return_value=experiment):
+            self.window._run_finished(baseline)
+            self.window.set_current_as_baseline()
+            self.window._run_finished(current)
 
         self.assertEqual(
             self.window.plot_widget.series_labels,
-            ["Experiment", "Baseline", "Current"],
+            ["试验", "基准", "当前"],
         )
         self.assertEqual(self.window.comparison_metrics_table.rowCount(), 3)
         self.assertIs(self.window.baseline_result, baseline)

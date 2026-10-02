@@ -7,232 +7,131 @@ from matplotlib.figure import Figure
 from matplotlib.font_manager import FontProperties
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QHBoxLayout, QStyle, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QStyle, QToolButton, QVBoxLayout, QWidget
 
 from material_test.domain import ExperimentData, SimulationResult
 
 
 class OverlayPlotWidget(QWidget):
-    """Interactive experiment/baseline/current comparison using PyQtGraph."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
+    """Shared interactive plot for previews, loading and comparison."""
+    def __init__(self, parent=None):
         super().__init__(parent)
+        self.force_unit, self.length_unit = 'N', 'mm'
+        self._series_labels = []
+        self._current_curve = None
         self.plot_widget = pg.PlotWidget()
-        self._series_labels: list[str] = []
-        self._configure_plot()
+        self.plot_widget.setBackground('white')
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.12)
+        self.plot_widget.setMenuEnabled(True)
+        for position in ('bottom', 'left', 'top', 'right'):
+            axis = self.plot_widget.getAxis(position)
+            axis.setTickFont(QFont('Microsoft YaHei UI', 9))
+            axis.enableAutoSIPrefix(False)
+        self.message_label = QLabel()
+        self.message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.message_label.setWordWrap(True)
+        self.message_label.setStyleSheet('color:#64748b; background:transparent; padding:14px;')
+        self.caption = QLabel()
+        self.caption.setWordWrap(True)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         toolbar = QHBoxLayout()
-        toolbar.addStretch(1)
-        reset_button = QToolButton()
-        reset_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
-        reset_button.setToolTip("自动适配全部曲线")
-        reset_button.clicked.connect(self.plot_widget.enableAutoRange)
-        toolbar.addWidget(reset_button)
+        toolbar.addWidget(self.caption, 1)
+        reset = QToolButton()
+        reset.setText('适配曲线')
+        reset.clicked.connect(self.plot_widget.enableAutoRange)
+        toolbar.addWidget(reset)
         layout.addLayout(toolbar)
+        layout.addWidget(self.message_label, 1)
         layout.addWidget(self.plot_widget, 1)
+        self.set_units('N', 'mm')
         self.clear()
 
-    def _configure_plot(self) -> None:
-        self.plot_widget.setBackground("white")
-        self.plot_widget.showAxis("top")
-        self.plot_widget.showAxis("right")
-        self.plot_widget.showGrid(x=True, y=True, alpha=0.09)
-        self.plot_widget.setMenuEnabled(True)
-        self.plot_widget.setMouseEnabled(x=True, y=True)
-        self.plot_widget.getViewBox().setDefaultPadding(0.02)
-        axis_pen = pg.mkPen("#344054", width=1.1)
-        text_pen = pg.mkPen("#344054")
-        tick_font = QFont("Times New Roman", 11)
-        for position in ("bottom", "top", "left", "right"):
-            axis = self.plot_widget.getAxis(position)
-            axis.setPen(axis_pen)
-            axis.setTextPen(text_pen)
-            axis.setTickFont(tick_font)
-            axis.enableAutoSIPrefix(False)
-        self.plot_widget.getAxis("top").setStyle(showValues=False)
-        self.plot_widget.getAxis("right").setStyle(showValues=False)
-        label_style = {
-            "color": "#344054",
-            "font-size": "15px",
-            "font-family": "Times New Roman, SimSun",
-        }
-        self.plot_widget.setLabel("bottom", "Displacement", **label_style)
-        self.plot_widget.setLabel("left", "Force", **label_style)
+    def set_units(self, force, length):
+        self.force_unit, self.length_unit = force, length
+        self.plot_widget.setLabel('bottom', f'位移 [{length}]')
+        self.plot_widget.setLabel('left', f'力 [{force}]')
 
-    def clear(self) -> None:
+    def clear(self, message='暂无计算曲线，请设置材料和加载后计算。'):
         self.plot_widget.clear()
         self._series_labels = []
+        self._current_curve = None
+        self.message_label.setText(message)
+        self.message_label.show()
+        self.plot_widget.hide()
+        self.caption.clear()
 
-    def update_curves(self, simulation: SimulationResult, experiment: ExperimentData | None = None) -> None:
-        self.update_comparison(simulation, experiment=experiment)
-
-    def update_comparison(
-        self,
-        current: SimulationResult,
-        experiment: ExperimentData | None = None,
-        baseline: SimulationResult | None = None,
-    ) -> None:
+    def _begin(self):
         self.plot_widget.clear()
+        legend = self.plot_widget.getPlotItem().legend
+        if legend is not None:
+            legend.clear()
+        else:
+            self.plot_widget.addLegend(offset=(12, 12))
         self._series_labels = []
-        legend = self.plot_widget.addLegend(offset=(12, 12), labelTextColor="#344054")
-        legend.setBrush(pg.mkBrush(255, 255, 255, 225))
-        if experiment is not None:
-            self._add_curve(
-                experiment.displacement,
-                experiment.force,
-                "Experiment",
-                pg.mkPen("#d62728", width=1.8),
-            )
-        if baseline is not None:
-            self._add_curve(
-                baseline.displacement,
-                baseline.force,
-                "Baseline",
-                pg.mkPen("#667085", width=1.7, style=Qt.PenStyle.DashLine),
-            )
-        self._add_curve(
-            current.displacement,
-            current.force,
-            "Current",
-            pg.mkPen("#1f77b4", width=2.2),
-        )
-        self.plot_widget.enableAutoRange()
+        self._current_curve = None
+        self.message_label.hide()
+        self.plot_widget.show()
+        self.caption.setStyleSheet('color:#334155;')
 
-    def _add_curve(
-        self,
-        displacement: np.ndarray,
-        force: np.ndarray,
-        label: str,
-        pen: QPen,
-    ) -> None:
-        self.plot_widget.plot(
-            np.asarray(displacement, dtype=float),
-            np.asarray(force, dtype=float),
-            pen=pen,
-            name=label,
-            antialias=True,
-        )
+    def _add_curve(self, displacement, force, label, pen):
+        item = self.plot_widget.plot(np.asarray(displacement), np.asarray(force), pen=pen, name=label, antialias=True)
         self._series_labels.append(label)
+        return item
 
     @property
-    def series_labels(self) -> list[str]:
+    def series_labels(self):
         return list(self._series_labels)
 
+    def update_curves(self, simulation, experiment=None):
+        self.update_comparison(simulation, experiment=experiment)
 
-class HysteresisPreviewWidget(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.figure = Figure(figsize=(5, 3), dpi=100)
-        self._cjk_font = FontProperties(family="Microsoft YaHei")
-        self.canvas = FigureCanvasQTAgg(self.figure)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.canvas)
-        self.clear("选择材料后计算滞回曲线")
+    def update_comparison(self, current, experiment=None, baseline=None, stale=False):
+        self._begin()
+        self.caption.setText('试验 / 基准 / 当前')
+        if experiment is not None:
+            self._add_curve(experiment.displacement, experiment.force, '试验', pg.mkPen('#111827', width=1.8))
+        if baseline is not None:
+            self._add_curve(baseline.displacement, baseline.force, '基准', pg.mkPen('#94a3b8', width=1.7, style=Qt.PenStyle.DashLine))
+        self._current_curve = self._add_curve(current.displacement, current.force, '当前', pg.mkPen('#1f5fae', width=2))
+        self.set_stale(stale)
+        self.plot_widget.enableAutoRange()
 
-    def clear(self, message: str = "暂无曲线") -> None:
-        self.figure.clear()
-        axes = self.figure.add_subplot(111)
-        axes.text(
-            0.5,
-            0.5,
-            message,
-            ha="center",
-            va="center",
-            transform=axes.transAxes,
-            color="#64748b",
-            fontproperties=self._cjk_font,
-        )
-        axes.set_xticks([])
-        axes.set_yticks([])
-        for spine in axes.spines.values():
-            spine.set_color("#d7dee9")
-        self.figure.tight_layout(pad=1.0)
-        self.canvas.draw_idle()
-
-    def update_curve(
-        self,
-        displacement: np.ndarray,
-        force: np.ndarray,
-        *,
-        title: str = "材料滞回响应",
-    ) -> None:
-        self.figure.clear()
-        axes = self.figure.add_subplot(111)
-        axes.plot(displacement, force, color="#1f5fae", linewidth=1.7)
-        axes.axhline(0.0, color="#94a3b8", linewidth=0.7)
-        axes.axvline(0.0, color="#94a3b8", linewidth=0.7)
-        axes.set_title(title, fontsize=10, fontproperties=self._cjk_font)
-        axes.set_xlabel("Displacement", fontsize=8)
-        axes.set_ylabel("Force", fontsize=8)
-        axes.tick_params(axis="both", direction="in", labelsize=7)
-        axes.grid(True, color="#e5eaf1", linewidth=0.6)
-        self.figure.tight_layout(pad=1.0)
-        self.canvas.draw_idle()
+    def set_stale(self, stale=True):
+        if self._current_curve is None:
+            return
+        self._current_curve.setPen(pg.mkPen('#9ca3af' if stale else '#1f5fae', width=2,
+            style=Qt.PenStyle.DashLine if stale else Qt.PenStyle.SolidLine))
+        if stale:
+            self.caption.setText('曲线已过期 · 请重新计算')
+            self.caption.setStyleSheet('color:#a16207; background:#fffbeb; padding:5px;')
+        else:
+            self.caption.setText('当前计算结果')
+            self.caption.setStyleSheet('color:#334155;')
 
 
-class StagePlotWidget(QWidget):
-    """Compact stage-specific plot without the full result toolbar."""
+class HysteresisPreviewWidget(OverlayPlotWidget):
+    def update_curve(self, displacement, force, *, title='材料滞回响应', experiment=None):
+        self._begin()
+        self.caption.setText(title)
+        if experiment is not None:
+            self._add_curve(experiment.displacement, experiment.force, '试验', pg.mkPen('#111827', width=1.8))
+        self._current_curve = self._add_curve(displacement, force, '当前', pg.mkPen('#1f5fae', width=2))
+        self.plot_widget.enableAutoRange()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.figure = Figure(figsize=(5, 3.4), dpi=100)
-        self._cjk_font = FontProperties(family="Microsoft YaHei")
-        self.canvas = FigureCanvasQTAgg(self.figure)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.canvas)
-        self.clear()
 
-    def clear(self, message: str = "暂无可视化数据") -> None:
-        self.figure.clear()
-        axes = self.figure.add_subplot(111)
-        axes.text(
-            0.5,
-            0.5,
-            message,
-            ha="center",
-            va="center",
-            transform=axes.transAxes,
-            color="#64748b",
-            fontproperties=self._cjk_font,
-        )
-        axes.set_xticks([])
-        axes.set_yticks([])
-        for spine in axes.spines.values():
-            spine.set_color("#d7dee9")
-        self.figure.tight_layout(pad=1.0)
-        self.canvas.draw_idle()
-
-    def update_series(
-        self,
-        series: list[tuple[np.ndarray, np.ndarray, str, str]],
-        *,
-        title: str,
-        x_label: str,
-        y_label: str,
-        zero_axes: bool = False,
-    ) -> None:
-        self.figure.clear()
-        axes = self.figure.add_subplot(111)
+class StagePlotWidget(OverlayPlotWidget):
+    def update_series(self, series, *, title, x_label, y_label, zero_axes=False):
+        self._begin()
+        self.caption.setText(title)
+        self.plot_widget.setLabel('bottom', f'{x_label} [{self.length_unit}]' if x_label == '位移' else x_label)
+        self.plot_widget.setLabel('left', f'{y_label} [{self.force_unit}]' if y_label == '力' else y_label)
         for x, y, label, color in series:
-            x_values = np.asarray(x, dtype=float)
-            y_values = np.asarray(y, dtype=float)
-            if x_values.size and y_values.size:
-                axes.plot(x_values, y_values, color=color, linewidth=1.65, label=label)
-        if zero_axes:
-            axes.axhline(0.0, color="#94a3b8", linewidth=0.7)
-            axes.axvline(0.0, color="#94a3b8", linewidth=0.7)
-        axes.set_title(title, fontsize=10, fontproperties=self._cjk_font)
-        axes.set_xlabel(x_label, fontsize=8, fontproperties=self._cjk_font)
-        axes.set_ylabel(y_label, fontsize=8, fontproperties=self._cjk_font)
-        axes.tick_params(axis="both", direction="in", labelsize=7)
-        axes.grid(True, color="#e5eaf1", linewidth=0.6)
-        if len(series) > 1 or (series and series[0][2]):
-            axes.legend(prop=self._cjk_font, fontsize=8, frameon=False)
-        self.figure.tight_layout(pad=1.0)
-        self.canvas.draw_idle()
+            if len(x):
+                item = self._add_curve(x, y, label, pg.mkPen('#111827' if '试验' in label else color, width=1.8))
+                if '试验' not in label:
+                    self._current_curve = item
+        self.plot_widget.enableAutoRange()
 
 
 class SpecimenOverviewWidget(QWidget):

@@ -38,6 +38,49 @@ class LibraryParameter:
 
 
 @dataclass(frozen=True)
+class MaterialReference:
+    """Slot for existing material tags consumed by a wrapper material such as Series."""
+
+    name: str
+    label: str
+    min_count: int = 1
+    max_count: int | None = None
+    preview_tags: tuple[int, ...] = ()
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> "MaterialReference":
+        if not data.get("name"):
+            raise ValueError("material references require a name")
+        max_count = data.get("max_count")
+        reference = cls(
+            name=str(data["name"]),
+            label=str(data.get("label", data["name"])),
+            min_count=int(data.get("min_count", 1)),
+            max_count=int(max_count) if max_count is not None else None,
+            preview_tags=tuple(int(tag) for tag in data.get("preview_tags", [])),
+        )
+        if reference.min_count < 1 or (reference.max_count is not None and reference.max_count < reference.min_count):
+            raise ValueError(f"invalid reference count for {reference.name}")
+        return reference
+
+    @property
+    def count_text(self) -> str:
+        if self.max_count == self.min_count:
+            return f"{self.min_count} 个"
+        if self.max_count is None:
+            return f"至少 {self.min_count} 个"
+        return f"{self.min_count}–{self.max_count} 个"
+
+    def validate_tags(self, tags: tuple[int, ...], *, owner_tag: int) -> None:
+        if len(tags) < self.min_count or (self.max_count is not None and len(tags) > self.max_count):
+            raise ValueError(f"{self.label}需选择{self.count_text}材料")
+        if len(set(tags)) != len(tags):
+            raise ValueError(f"{self.label}不能重复引用同一材料")
+        if int(owner_tag) in tags:
+            raise ValueError("组合材料不能引用自身 Tag")
+
+
+@dataclass(frozen=True)
 class MaterialLibraryEntry:
     id: str
     name: str
@@ -51,6 +94,8 @@ class MaterialLibraryEntry:
     compatibility: str = ""
     notes: str = ""
     keywords: tuple[str, ...] = field(default_factory=tuple)
+    references: MaterialReference | None = None
+    preview_materials: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "MaterialLibraryEntry":
@@ -71,15 +116,33 @@ class MaterialLibraryEntry:
             compatibility=str(data.get("compatibility", "")),
             notes=str(data.get("notes", "")),
             keywords=tuple(str(item) for item in data.get("keywords", [])),
+            references=MaterialReference.from_mapping(data["references"]) if data.get("references") else None,
+            preview_materials=tuple(str(item) for item in data.get("preview_materials", [])),
         )
         entry.as_template()
         return entry
 
+    def _command_with_references(self, command: str, tag: int, references: tuple[int, ...] | None) -> str:
+        if self.references is None:
+            return command
+        if references is None:
+            raise ValueError(f"{self.display_name} 需要先选择{self.references.label}")
+        references = tuple(int(item) for item in references)
+        self.references.validate_tags(references, owner_tag=tag)
+        return command.replace("{" + self.references.name + "}", " ".join(str(item) for item in references))
+
     def as_template(self, *, tag: int = 1) -> MaterialTemplate:
+        """Standalone template; wrapper materials bring their own example child materials."""
+        command = self.command
+        if self.references is not None:
+            preview_tags = self.references.preview_tags
+            if int(tag) in preview_tags:
+                raise ValueError(f"Tag {tag} 与示例子材料 Tag 冲突，请选择其他 Tag")
+            command = "\n".join((*self.preview_materials, self._command_with_references(command, tag, preview_tags)))
         template = MaterialTemplate(
             name=self.name,
             description=self.description,
-            command=self.command,
+            command=command,
             tag=int(tag),
             parameters=[
                 ParameterSpec(
@@ -97,10 +160,11 @@ class MaterialLibraryEntry:
         template.validate()
         return template
 
-    def instantiate(self, *, tag: int) -> MaterialTemplate:
+    def instantiate(self, *, tag: int, references: tuple[int, ...] | None = None) -> MaterialTemplate:
         """Create a namespaced command that can be appended to a multi-material project."""
         prefix = f"m{int(tag)}_"
-        command = self.command.replace("{tag}", str(int(tag)))
+        command = self._command_with_references(self.command, int(tag), references)
+        command = command.replace("{tag}", str(int(tag)))
         parameters: list[ParameterSpec] = []
         for parameter in self.parameters:
             scoped_name = f"{prefix}{parameter.name}"

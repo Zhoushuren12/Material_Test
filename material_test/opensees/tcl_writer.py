@@ -20,6 +20,7 @@ def write_material_test_tcl(
     topology: str = "single",
     material_tags: Sequence[int] | None = None,
     topology_root: TopologyNode | None = None,
+    material_mode: str = "stress_strain",
 ) -> None:
     """Write a Tcl model for a uniaxial material cyclic displacement test."""
     tcl_file.parent.mkdir(parents=True, exist_ok=True)
@@ -32,6 +33,7 @@ def write_material_test_tcl(
         area=area,
         length=length,
         topology_root=topology_root,
+        material_mode=material_mode,
     )
     tcl_file.write_text(
         f"""wipe
@@ -82,6 +84,7 @@ def _explicit_model_commands(
     area: float,
     length: float,
     topology_root: TopologyNode | None = None,
+    material_mode: str = "stress_strain",
 ) -> tuple[str, int, str]:
     topology = topology.lower()
     if topology_root is None:
@@ -100,11 +103,15 @@ def _explicit_model_commands(
 
     compiled = compile_topology(topology_root, default_area=area, total_length=length)
     lines = [f"node {node.tag} {node.x:.12g} 0.0" for node in compiled.nodes]
-    lines.extend(
-        f"element Truss {element.tag} {element.node_i} {element.node_j} "
-        f"{element.area:.12g} {element.material_tag}"
-        for element in compiled.elements
-    )
+    if material_mode not in {"stress_strain", "force_deformation"}:
+        raise ValueError("未知本构输入模式")
+    for element in compiled.elements:
+        if material_mode == "force_deformation":
+            lines.append(f"element twoNodeLink {element.tag} {element.node_i} {element.node_j} "
+                         f"-mat {element.material_tag} -dir 1 -orient 1 0 0")
+        else:
+            lines.append(f"element Truss {element.tag} {element.node_i} {element.node_j} "
+                         f"{element.area:.12g} {element.material_tag}")
     lines.append(f"fix {compiled.fixed_node} 1 1 1")
     lines.extend(
         f"fix {node.tag} 0 1 1"

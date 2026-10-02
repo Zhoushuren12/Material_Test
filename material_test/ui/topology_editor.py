@@ -219,6 +219,22 @@ class TopologyPreview(QWidget):
         painter.drawText(self.rect().adjusted(36, 36, -36, -36), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, text)
 
 
+class TopologyTree(QTreeWidget):
+    reordered = Signal()
+
+    def dropEvent(self, event):
+        selected = self.currentItem()
+        target = self.itemAt(event.position().toPoint())
+        if (selected is None or target is None or selected.parent() is None
+                or selected.parent() is not target.parent()
+                or self.dropIndicatorPosition() not in (self.DropIndicatorPosition.AboveItem, self.DropIndicatorPosition.BelowItem)):
+            event.ignore()
+            return
+        super().dropEvent(event)
+        if event.isAccepted():
+            self.reordered.emit()
+
+
 class TopologyEditor(QWidget):
     changed = Signal()
 
@@ -226,7 +242,12 @@ class TopologyEditor(QWidget):
         super().__init__(parent)
         self._updating_properties = False
         self._material_options: dict[int, str] = {}
-        self.tree = QTreeWidget()
+        self.force_deformation_mode = False
+        self.tree = TopologyTree()
+        self.tree.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
+        self.tree.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.tree.reordered.connect(self._model_changed)
+        self.tree.setToolTip("可拖拽调整同组组件的先后顺序；连接方式通过包装按钮修改")
         self.tree.setHeaderLabels(["组件", "材料赋值", "长度权重"])
         self.tree.setColumnWidth(0, 230)
         self.tree.setAlternatingRowColors(True)
@@ -236,6 +257,8 @@ class TopologyEditor(QWidget):
         add_material = QPushButton("添加单元")
         wrap_series = QPushButton("串联")
         wrap_parallel = QPushButton("并联")
+        wrap_series.setToolTip("将所选组件包成串联组")
+        wrap_parallel.setToolTip("将所选组件包成并联组")
         duplicate = QPushButton("复制")
         remove = QPushButton("删除")
         move_up = QPushButton("上移")
@@ -322,6 +345,22 @@ class TopologyEditor(QWidget):
         return config
 
     def set_root(self, root: TopologyNode) -> None:
+        root = deepcopy(root)
+        leaves = []
+        def collect(node):
+            if node.kind == "material":
+                leaves.append(node)
+            for child in node.children:
+                collect(child)
+        collect(root)
+        names = {node.name for node in leaves if node.name}
+        for node in leaves:
+            if not node.name:
+                index = 1
+                while f"E{index:02d}" in names:
+                    index += 1
+                node.name = f"E{index:02d}"
+                names.add(node.name)
         self.tree.clear()
         item = self._item_from_node(root)
         self.tree.addTopLevelItem(item)
@@ -532,7 +571,7 @@ class TopologyEditor(QWidget):
         self.weight_spin.setValue(float(data.get("length_weight", 1.0)))
         self.name_edit.setEnabled(enabled)
         self.material_combo.setEnabled(kind == "material")
-        self.area_spin.setEnabled(kind == "material")
+        self.area_spin.setEnabled(kind == "material" and not self.force_deformation_mode)
         self.weight_spin.setEnabled(enabled)
         self._updating_properties = False
 
@@ -569,12 +608,11 @@ class TopologyEditor(QWidget):
         self.preview.set_topology(root)
 
     def _next_element_name(self) -> str:
-        count = sum(
-            1
-            for item in QTreeWidgetItemIteratorCompat(self.tree)
-            if item.data(0, Qt.ItemDataRole.UserRole).get("kind") == "material"
-        )
-        return f"E{count + 1:02d}"
+        names = {item.data(0, Qt.ItemDataRole.UserRole).get("name") for item in QTreeWidgetItemIteratorCompat(self.tree)}
+        index = 1
+        while f"E{index:02d}" in names:
+            index += 1
+        return f"E{index:02d}"
 
     def _new_group_item(self, kind: str) -> QTreeWidgetItem:
         item = QTreeWidgetItem()

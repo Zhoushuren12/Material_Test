@@ -183,3 +183,55 @@ materials:
       - {name: K, label: 接触刚度, value: 100000.0, min: 0.0, unit: force/deformation, description: 控制间隙闭合后的接触弹性斜率}
       - {name: c, label: 阻尼系数, value: 100.0, min: 0.0, unit: force/velocity, description: 控制碰撞接触阶段的速度耗能}
       - {name: gap, label: 初始间隙, value: -0.001, max: 0.0, unit: deformation, description: 控制开始发生接触的相对位移}
+
+  - id: series
+    name: Series
+    display_name: Series 串联组合材料
+    category: 组合与包装
+    description: 将已有单轴材料串联，各子材料应力相同，总应变为各子材料应变之和；采用等效力–变形本构时对应等力、变形相加。
+    command: uniaxialMaterial Series {tag} {materials}
+    source_type: OpenSees documentation
+    source_url: https://opensees.github.io/OpenSeesDocumentation/user/manual/material/uniaxialMaterials/Series.html
+    compatibility: official
+    notes: 需引用至少两个已定义的材料 Tag，子材料必须先于本材料定义。串联需内部迭代，子材料刚度相差悬殊或出现软化时可能不收敛；库中预览使用 Elastic + Steel01 示例子材料。
+    keywords: [series, combination, wrapper, 串联, 组合]
+    references: {name: materials, label: 串联子材料, min_count: 2, preview_tags: [901, 902]}
+    preview_materials:
+      - uniaxialMaterial Elastic 901 400000.0
+      - uniaxialMaterial Steel01 902 355.0 400000.0 0.01
+    parameters: []
+
+  - id: parallel
+    name: Parallel
+    display_name: Parallel 并联组合材料
+    category: 组合与包装
+    description: 将已有单轴材料并联，各子材料应变相同，总应力为各子材料应力之和；采用等效力–变形本构时对应等变形、力相加。
+    command: uniaxialMaterial Parallel {tag} {materials}
+    source_type: OpenSees documentation
+    source_url: https://opensees.github.io/OpenSeesDocumentation/user/manual/material/uniaxialMaterials/Parallel.html
+    compatibility: official
+    notes: 需引用至少两个已定义的材料 Tag，子材料必须先于本材料定义。此处不使用 -factors 缩放系数，以保证可发布为支撑模型；库中预览使用 Steel01 + Elastic 示例子材料。
+    keywords: [parallel, combination, wrapper, 并联, 组合, 自复位, 耗能]
+    references: {name: materials, label: 并联子材料, min_count: 2, preview_tags: [901, 902]}
+    preview_materials:
+      - uniaxialMaterial Steel01 901 355.0 200000.0 0.01
+      - uniaxialMaterial Elastic 902 20000.0
+    parameters: []
+
+  - id: min_max
+    name: MinMax
+    display_name: MinMax 应变限值包装材料
+    category: 组合与包装
+    description: 包装一个已有材料，以应变上下限触发不可逆失效；达到阈值后支路不再承力，可用于应变阈值失效近似。
+    command: uniaxialMaterial MinMax {tag} {material} -min {minStrain} -max {maxStrain}
+    source_type: OpenSees documentation
+    source_url: https://opensees.github.io/OpenSeesDocumentation/user/manual/material/uniaxialMaterials/MinMax.html
+    compatibility: official
+    notes: 需引用一个已定义的材料 Tag。失效是不可逆的，之后整条支路不再承力；限值以应变计，与面积、长度一起换算为变形。库中预览使用 Steel01 示例子材料。
+    keywords: [minmax, failure, fracture, strain limit, wrapper, 失效, 断裂, 应变限值]
+    references: {name: material, label: 被包装材料, min_count: 1, max_count: 1, preview_tags: [901]}
+    preview_materials:
+      - uniaxialMaterial Steel01 901 355.0 200000.0 0.01
+    parameters:
+      - {name: minStrain, label: 最小应变限值, value: -0.005, max: 0.0, unit: model strain unit, description: 受压变形超过该值后材料失效}
+      - {name: maxStrain, label: 最大应变限值, value: 0.005, min: 0.0, unit: model strain unit, description: 受拉变形超过该值后材料失效}

@@ -72,6 +72,11 @@ def load_project_config(path: str | Path) -> ProjectConfig:
         length=float(data.get("length", 1.0)),
         fitting=fitting,
         modeling=ModelingConfig.from_mapping(modeling_data),
+        force_unit=str((data.get("units") or {}).get("force", "N")),
+        length_unit=str((data.get("units") or {}).get("length", "mm")),
+        material_mode=str(data.get("material_mode", "stress_strain")),
+        experiment_displacement_scale=float(experiment.get("displacement_scale", 1.0)),
+        experiment_force_scale=float(experiment.get("force_scale", 1.0)),
     )
 
 
@@ -84,6 +89,8 @@ def save_project_config(config: ProjectConfig, path: str | Path) -> None:
         "experiment": {
             "path": str(config.experiment_path) if config.experiment_path else None,
             "sheet": config.experiment_sheet,
+            "displacement_scale": config.experiment_displacement_scale,
+            "force_scale": config.experiment_force_scale,
             "displacement_column": config.displacement_column,
             "force_column": config.force_column,
         },
@@ -91,6 +98,8 @@ def save_project_config(config: ProjectConfig, path: str | Path) -> None:
         "area": config.area,
         "length": config.length,
         "modeling": config.modeling.to_mapping(),
+        "units": {"force": config.force_unit, "length": config.length_unit},
+        "material_mode": config.material_mode,
     }
     if config.material_template_path:
         data["material_template"] = str(config.material_template_path)

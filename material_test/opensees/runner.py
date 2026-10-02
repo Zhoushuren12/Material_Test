@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import numpy as np
 
 from material_test.domain import MaterialTemplate, ModelingConfig, SimulationResult, SolverConfig
+from material_test.cancellation import AnalysisCancelled
 from material_test.modeling import defined_material_tags
+from material_test.material_commands import validate_solver_materials
 from material_test.opensees.tcl_writer import write_material_test_tcl
 
 
@@ -20,8 +23,13 @@ def run_material_history(
     area: float = 1.0,
     length: float = 1.0,
     modeling: ModelingConfig | None = None,
+    material_mode: str = "stress_strain",
+    cancel_check=None,
 ) -> SimulationResult:
     """Run a material test with a configured OpenSees executable."""
+    if cancel_check and cancel_check():
+        raise AnalysisCancelled("计算已取消")
+    validate_solver_materials(material)
     executable = solver.executable_path.resolve()
     if not executable.exists():
         raise FileNotFoundError(f"OpenSees executable not found: {executable}")
@@ -65,6 +73,7 @@ def run_material_history(
         topology=modeling.topology,
         material_tags=modeling.material_tags,
         topology_root=topology_root,
+        material_mode=material_mode,
     )
 
     env = os.environ.copy()
@@ -72,27 +81,41 @@ def run_material_history(
         env["TCL_LIBRARY"] = str(tcl_library)
 
     cwd = (solver.working_dir or executable.parent).resolve()
-    process = subprocess.run(
+    process = subprocess.Popen(
         [str(executable), str(tcl_file)],
         cwd=cwd,
         env=env,
         text=True,
-        capture_output=True,
-        timeout=solver.timeout,
-        check=False,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
+    started = time.monotonic()
+    try:
+        while True:
+            if cancel_check and cancel_check():
+                raise AnalysisCancelled("计算已取消")
+            if time.monotonic() - started >= solver.timeout:
+                raise TimeoutError(f"OpenSees 计算超过 {solver.timeout:g} 秒")
+            try:
+                stdout, stderr = process.communicate(timeout=0.1)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    except BaseException:
+        process.kill()
+        process.communicate()
+        raise
 
     if process.returncode != 0:
         raise RuntimeError(
             "OpenSees failed\n"
             f"command: {executable} {tcl_file}\n"
             f"return code: {process.returncode}\n"
-            f"stdout:\n{process.stdout}\n"
-            f"stderr:\n{process.stderr}"
+            f"stdout:\n{stdout}\n"
+            f"stderr:\n{stderr}"
         )
     if not response_file.exists():
         initialization_hint = ""
-        diagnostic_output = f"{process.stdout}\n{process.stderr}".lower()
+        diagnostic_output = f"{stdout}\n{stderr}".lower()
         if "can't find a usable init.tcl" in diagnostic_output:
             initialization_hint = (
                 "\nOpenSees Tcl initialization failed. Configure solver.tcl_library_path "
@@ -103,8 +126,8 @@ def run_material_history(
             f"command: {executable} {tcl_file}\n"
             f"return code: {process.returncode}"
             f"{initialization_hint}\n"
-            f"stdout:\n{process.stdout}\n"
-            f"stderr:\n{process.stderr}"
+            f"stdout:\n{stdout}\n"
+            f"stderr:\n{stderr}"
         )
     if response_file.stat().st_size == 0:
         raise RuntimeError("OpenSees wrote an empty response file")
@@ -115,7 +138,10 @@ def run_material_history(
     if response.shape[1] < 2:
         raise RuntimeError(f"response file must contain at least two columns: {response_file}")
     if len(response) != len(history) or not np.all(np.isfinite(response[:, :2])):
-        raise RuntimeError(f'计算未完成完整加载历程：应有 {len(history)} 点，实际 {len(response)} 点；不能发布不完整结果。')
+        raise RuntimeError(
+            f'计算未完成完整加载历程：应有 {len(history)} 点，实际 {len(response)} 点；不能发布不完整结果。\n'
+            f'stdout:\n{stdout}\nstderr:\n{stderr}'
+        )
     if not np.allclose(response[:, 0], history, rtol=1e-8, atol=1e-9):
         raise RuntimeError('计算位移与输入加载历程不一致；请检查收敛和输出文件。')
 
@@ -125,8 +151,8 @@ def run_material_history(
         tcl_file=tcl_file,
         history_file=history_file,
         response_file=response_file,
-        stdout=process.stdout,
-        stderr=process.stderr,
+        stdout=stdout,
+        stderr=stderr,
         returncode=process.returncode,
     )
 

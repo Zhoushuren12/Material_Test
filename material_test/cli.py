@@ -12,6 +12,11 @@ from material_test.workflow import run_project
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="OpenSees material testing utility.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    component=subparsers.add_parser('component-test',help='Test an .oasbrace with the shared structural component kernel.')
+    component.add_argument('package',type=Path)
+    component.add_argument('--path',default='0,5,-5,0,10,-10,0',help='Ordered displacement turning points, mm')
+    component.add_argument('--step',type=float,default=.5)
+    component.add_argument('--output',type=Path,required=True,help='New JSON result file (never overwrite)')
 
     run_parser = subparsers.add_parser("run", help="Run a material test project config.")
     run_parser.add_argument("config", type=Path, help="Project YAML config path.")
@@ -27,6 +32,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command=='component-test':
+        import json
+        from dataclasses import asdict
+        from material_test.component_adapter import evaluate_component
+        if args.output.exists():parser.error('Output already exists; choose a new result file.')
+        result=evaluate_component(args.package,[float(v.strip()) for v in args.path.split(',')],args.step)
+        args.output.parent.mkdir(parents=True,exist_ok=True)
+        with args.output.open('x',encoding='utf-8') as stream:
+            json.dump(asdict(result),stream,ensure_ascii=False,indent=2,allow_nan=False)
+        print(f'Component result: {args.output}')
+        return 0
 
     if args.command == "run":
         config = load_project_config(args.config)

@@ -174,6 +174,8 @@ class LoadingProtocol:
     history_column: str | int | None = None
     history_sheet: str | int | None = 0
     append_zero: bool = False
+    source: str = "auto"
+    history_scale: float = 1.0
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any], *, base_dir: Path | None = None) -> "LoadingProtocol":
@@ -190,16 +192,20 @@ class LoadingProtocol:
             history_column=history.get("displacement_column", history.get("column")),
             history_sheet=history.get("sheet", 0),
             append_zero=bool(data.get("append_zero", history.get("append_zero", False))),
+            source=str(data.get("source", "external" if history.get("path") else "amplitudes")),
+            history_scale=float(history.get("scale", 1.0)),
         )
 
     def to_mapping(self) -> dict[str, Any]:
-        data: dict[str, Any] = {"amplitudes": list(self.amplitudes), "du": self.du}
+        data: dict[str, Any] = {"amplitudes": list(self.amplitudes), "du": self.du,
+                                "source": self.source if self.source != "auto" else ("external" if self.history_path else "amplitudes")}
         if self.history_path:
             data["history"] = {
                 "path": str(self.history_path),
                 "displacement_column": self.history_column,
                 "sheet": self.history_sheet,
                 "append_zero": self.append_zero,
+                "scale": self.history_scale,
             }
         elif self.append_zero:
             data["append_zero"] = self.append_zero
@@ -360,6 +366,11 @@ class ProjectConfig:
     length: float = 1.0
     fitting: FitConfig | None = None
     modeling: ModelingConfig = field(default_factory=lambda: ModelingConfig())
+    force_unit: str = "N"
+    length_unit: str = "mm"
+    material_mode: str = "stress_strain"
+    experiment_displacement_scale: float = 1.0
+    experiment_force_scale: float = 1.0
 
 
 @dataclass

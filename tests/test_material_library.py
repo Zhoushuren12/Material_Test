@@ -12,9 +12,10 @@ class MaterialLibraryTests(unittest.TestCase):
 
     def test_library_contains_unique_research_materials(self) -> None:
         ids = [entry.id for entry in self.library.entries]
-        self.assertEqual(len(ids), 10)
+        self.assertEqual(len(ids), 13)
         self.assertEqual(len(ids), len(set(ids)))
         self.assertTrue({"elastic", "sma", "self_centering", "steel02", "viscous"}.issubset(ids))
+        self.assertTrue({"series", "parallel", "min_max"}.issubset(ids))
 
     def test_every_entry_renders_a_command(self) -> None:
         for entry in self.library.entries:
@@ -29,7 +30,8 @@ class MaterialLibraryTests(unittest.TestCase):
     def test_added_material_parameters_are_namespaced(self) -> None:
         for entry in self.library.entries:
             with self.subTest(entry=entry.id):
-                template = entry.instantiate(tag=101)
+                references = entry.references.preview_tags if entry.references else None
+                template = entry.instantiate(tag=101, references=references)
                 self.assertIn(" 101 ", f" {template.render_command()} ")
                 self.assertTrue(
                     all(parameter.name.startswith("m101_") for parameter in template.parameters)

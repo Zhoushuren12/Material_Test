@@ -1,0 +1,232 @@
+from __future__ import annotations
+from pathlib import Path
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QFrame,
+    QSpinBox, QSplitter, QTableWidget, QTabWidget, QToolButton, QVBoxLayout, QWidget,
+    QStyle, QMenu, QDockWidget, QProgressBar,
+)
+from material_test.ui.editors import CompactDoubleSpinBox, MaterialTagSpinBox
+from material_test.ui.plot_canvas import HysteresisPreviewWidget, OverlayPlotWidget, SpecimenOverviewWidget, StagePlotWidget
+from material_test.ui.topology_editor import TopologyEditor
+ROOT = Path(__file__).resolve().parents[3]
+
+def build_comparison_page(self) -> QWidget:
+    page = QWidget()
+    outer = QHBoxLayout(page)
+    outer.setContentsMargins(0, 0, 0, 0)
+    splitter = QSplitter(Qt.Orientation.Horizontal)
+
+    controls = QWidget()
+    controls_layout = QVBoxLayout(controls)
+    controls_layout.setContentsMargins(0, 0, 14, 0)
+    controls_layout.setSpacing(9)
+    controls_layout.addWidget(self._section_title("手动调参"))
+    self.comparison_material_combo = QComboBox()
+    self.comparison_material_combo.currentIndexChanged.connect(
+        self._populate_comparison_parameters
+    )
+    controls_layout.addWidget(self.comparison_material_combo)
+    self.comparison_parameter_table = QTableWidget(0, 4)
+    self.comparison_parameter_table.setHorizontalHeaderLabels(
+        ["参数", "含义", "当前值", "单位"]
+    )
+    self.comparison_parameter_table.horizontalHeader().setSectionResizeMode(
+        0, QHeaderView.ResizeMode.ResizeToContents
+    )
+    self.comparison_parameter_table.horizontalHeader().setSectionResizeMode(
+        1, QHeaderView.ResizeMode.Stretch
+    )
+    self.comparison_parameter_table.horizontalHeader().setSectionResizeMode(
+        2, QHeaderView.ResizeMode.ResizeToContents
+    )
+    self.comparison_parameter_table.verticalHeader().setVisible(False)
+    self.comparison_parameter_table.setWordWrap(False)
+    self.comparison_parameter_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+    self.comparison_parameter_table.setAlternatingRowColors(True)
+    controls_layout.addWidget(self.comparison_parameter_table, 1)
+
+    comparison_protocol_form = QFormLayout()
+    self.comparison_protocol_combo = QComboBox()
+    self.comparison_protocol_combo.addItem("当前加载制度", "current")
+    self.comparison_protocol_combo.addItem("试验位移历程", "experiment")
+    self.comparison_protocol_combo.currentIndexChanged.connect(
+        lambda index: self._mark_comparison_dirty("计算加载来源已修改")
+    )
+    self.comparison_protocol_combo.hide()
+    source_label = QLabel(); source_label.setWordWrap(True); self._source_badges.append(source_label)
+    comparison_protocol_form.addRow(source_label)
+    self.comparison_protocol_combo.currentIndexChanged.connect(lambda index: self.loading_source_combo.setCurrentIndex(
+        self.loading_source_combo.findData("experiment" if self.comparison_protocol_combo.currentData() == "experiment" else "amplitudes")))
+    controls_layout.addLayout(comparison_protocol_form)
+    self.run_button = QPushButton("计算当前模型")
+    self.run_button.setObjectName("primaryButton")
+    self.run_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+    self.run_button.clicked.connect(self.start_run)
+    self.auto_recalculate_check = QCheckBox("自动重算（改参后停顿 400 ms）")
+    controls_layout.addWidget(self.auto_recalculate_check); controls_layout.addWidget(self.run_button)
+    self.cancel_button = QPushButton("取消计算"); self.cancel_button.setEnabled(False)
+    self.cancel_button.clicked.connect(self.cancel_analysis); controls_layout.addWidget(self.cancel_button)
+    baseline_actions = QHBoxLayout()
+    self.set_baseline_button = QPushButton("设为基准")
+    self.set_baseline_button.setEnabled(False)
+    self.set_baseline_button.clicked.connect(self.set_current_as_baseline)
+    self.clear_baseline_button = QPushButton("清除基准")
+    self.clear_baseline_button.setIcon(
+        self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton)
+    )
+    self.clear_baseline_button.setToolTip("清除基准曲线")
+    self.clear_baseline_button.setEnabled(False)
+    self.clear_baseline_button.clicked.connect(self.clear_baseline)
+    baseline_actions.addWidget(self.set_baseline_button, 1)
+    baseline_actions.addWidget(self.clear_baseline_button)
+    controls_layout.addLayout(baseline_actions)
+    self.export_button = QPushButton("导出当前对比图")
+    self.export_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
+    self.export_button.clicked.connect(self.export_figure)
+    self.export_button.setEnabled(False)
+    controls_layout.addWidget(self.export_button)
+    self.publish_button = QPushButton('发布支撑模型…')
+    self.publish_button.setToolTip('保存两个轴向端口、显式内部装配及实验/计算来源，供 Structural analysis 导入')
+    self.publish_button.clicked.connect(self.publish_brace)
+    self.publish_button.setEnabled(False)
+    controls_layout.addWidget(self.publish_button)
+    self.run_state_label = QLabel("就绪")
+    self.run_state_label.setObjectName("runState")
+    self.run_state_label.setWordWrap(True)
+    self.run_state_label.hide()
+
+    result_panel = QWidget()
+    result_layout = QVBoxLayout(result_panel)
+    result_layout.setContentsMargins(14, 0, 0, 0)
+    result_layout.setSpacing(7)
+    result_layout.addWidget(self._section_title("曲线叠加"))
+    self.stale_notice = QPushButton("曲线已过期 · 重新计算")
+    self.stale_notice.setStyleSheet("background:#fffbeb; color:#a16207; border:1px solid #fcd34d;")
+    self.stale_notice.clicked.connect(self.start_run); self.stale_notice.hide(); result_layout.addWidget(self.stale_notice)
+    self.plot_widget = OverlayPlotWidget()
+    result_layout.addWidget(self.plot_widget, 1)
+    detail_tabs = QTabWidget()
+    metrics_panel = QWidget()
+    metrics_layout = QVBoxLayout(metrics_panel)
+    metrics_layout.setContentsMargins(8, 8, 8, 8)
+    self.comparison_metrics_table = QTableWidget(0, 7)
+    self.comparison_metrics_table.setHorizontalHeaderLabels(
+        ["曲线", "峰值力", "初始刚度", "滞回积分", "末点力", "RMSE", "NRMSE"]
+    )
+    self.comparison_metrics_table.horizontalHeader().setSectionResizeMode(
+        QHeaderView.ResizeMode.Stretch
+    )
+    self.comparison_metrics_table.verticalHeader().setVisible(False)
+    self.comparison_metrics_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    self.comparison_metrics_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+    metrics_layout.addWidget(self.comparison_metrics_table)
+    detail_tabs.addTab(metrics_panel, "对比指标")
+    log_panel = QWidget()
+    log_layout = QVBoxLayout(log_panel)
+    log_layout.setContentsMargins(0, 0, 0, 0)
+    log_header = QHBoxLayout()
+    log_header.addWidget(self._section_title("运行日志"))
+    log_header.addStretch(1)
+    clear_button = QToolButton()
+    clear_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
+    clear_button.setToolTip("清空日志")
+    clear_button.clicked.connect(self.clear_log)
+    log_header.addWidget(clear_button)
+    self.log_edit = QPlainTextEdit()
+    self.log_edit.setReadOnly(True)
+    self.log_edit.setMaximumBlockCount(2000)
+    log_layout.addLayout(log_header)
+    log_layout.addWidget(self.log_edit)
+    self.log_dock = QDockWidget("运行日志（所有页面共用）", self); self.log_dock.setObjectName("globalRunLog")
+    self.log_dock.setWidget(log_panel); self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock); self.log_dock.hide()
+    detail_tabs.setMaximumHeight(190)
+    result_layout.addWidget(detail_tabs)
+
+    splitter.addWidget(controls)
+    splitter.addWidget(result_panel)
+    splitter.setSizes([450, 750])
+    outer.addWidget(splitter)
+    return page
+
+
+def build_fitting_page(self) -> QWidget:
+    splitter = QSplitter(Qt.Orientation.Horizontal)
+    settings = QWidget()
+    layout = QVBoxLayout(settings)
+    layout.setContentsMargins(0, 0, 18, 0)
+    layout.setSpacing(10)
+    self.fit_algorithm_combo = QComboBox()
+    self.fit_algorithm_combo.addItem("差分进化 DE", "de")
+    self.fit_algorithm_combo.addItem("粒子群 PSO", "pso")
+    self.fit_max_evaluations_spin = QSpinBox()
+    self.fit_max_evaluations_spin.setRange(8, 100000)
+    self.fit_max_evaluations_spin.setValue(240)
+    self.fit_population_spin = QSpinBox()
+    self.fit_population_spin.setRange(2, 1000)
+    self.fit_population_spin.setValue(16)
+    self.fit_local_refine_check = QCheckBox("局部最小二乘精修")
+    self.fit_local_refine_check.setChecked(True)
+    self.fit_local_evaluations_spin = QSpinBox()
+    self.fit_local_evaluations_spin.setRange(1, 100000)
+    self.fit_local_evaluations_spin.setValue(120)
+    algorithm_form = QFormLayout()
+    algorithm_form.setVerticalSpacing(9)
+    algorithm_form.addRow("全局算法", self.fit_algorithm_combo)
+    algorithm_form.addRow("全局评估次数", self.fit_max_evaluations_spin)
+    algorithm_form.addRow("种群规模", self.fit_population_spin)
+    algorithm_form.addRow("局部评估次数", self.fit_local_evaluations_spin)
+    algorithm_form.addRow("", self.fit_local_refine_check)
+    layout.addLayout(algorithm_form)
+    layout.addWidget(self._section_title("待拟合参数"))
+    self.fit_table = QTableWidget(0, 6)
+    self.fit_table.setHorizontalHeaderLabels(["拟合", "参数", "下限", "上限", "尺度", "当前值"])
+    self.fit_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+    self.fit_table.verticalHeader().setVisible(False)
+    self.fit_table.setWordWrap(False)
+    self.fit_table.setAlternatingRowColors(True)
+    layout.addWidget(self.fit_table, 1)
+    self.fit_page_button = QPushButton("开始参数拟合")
+    self.fit_page_button.setObjectName("primaryButton")
+    self.fit_page_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+    self.fit_page_button.clicked.connect(self.start_fit)
+    self.fit_validation_label = QLabel(); self.fit_validation_label.setWordWrap(True); layout.addWidget(self.fit_validation_label)
+    self.fit_table.itemChanged.connect(self._fit_table_edited)
+    self.fit_progress = QProgressBar(); self.fit_progress.setRange(0, 1); self.fit_progress.setValue(0); layout.addWidget(self.fit_progress)
+    layout.addWidget(self.fit_page_button)
+    self.fit_cancel_button = QPushButton("取消拟合 / 计算"); self.fit_cancel_button.setEnabled(False)
+    self.fit_cancel_button.clicked.connect(self.cancel_analysis); layout.addWidget(self.fit_cancel_button)
+    self.undo_fit_button = QPushButton("撤销应用的拟合参数"); self.undo_fit_button.setEnabled(False)
+    self.undo_fit_button.clicked.connect(self.undo_fit); layout.addWidget(self.undo_fit_button)
+
+    preview_panel = QWidget()
+    preview_layout = QVBoxLayout(preview_panel)
+    preview_layout.setContentsMargins(18, 0, 0, 0)
+    preview_layout.setSpacing(8)
+    preview_layout.addWidget(self._section_title("拟合曲线对比"))
+    self.fitting_preview_plot = StagePlotWidget()
+    self.fitting_preview_plot.clear("导入试验数据后可查看曲线；拟合完成后显示最终对比")
+    self.fitting_preview_plot.setMinimumHeight(340)
+    preview_layout.addWidget(self.fitting_preview_plot, 1)
+    self.fitting_preview_status = QLabel("尚未运行拟合")
+    self.fitting_preview_status.setObjectName("previewNote")
+    self.fitting_preview_status.setWordWrap(True)
+    preview_layout.addWidget(self.fitting_preview_status)
+
+    splitter.addWidget(settings)
+    splitter.addWidget(preview_panel)
+    splitter.setSizes([520, 680])
+    return splitter
+
+
+class CalibrationPage(QWidget):
+    def __init__(self, window):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        window.calibration_tabs = QTabWidget()
+        window.calibration_tabs.addTab(build_comparison_page(window), '手动调参')
+        window.calibration_tabs.addTab(build_fitting_page(window), '自动拟合')
+        window.calibration_tabs.currentChanged.connect(lambda *_: window._sync_fit_table())
+        layout.addWidget(window.calibration_tabs)

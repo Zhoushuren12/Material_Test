@@ -26,10 +26,8 @@ loading:
     - -80.0
     - 0.0
   du: 0.25
-experiment:
-  path: ../data/twostage_experiment_sample.csv
-  displacement_column: displacement
-  force_column: force
+# Numerical-only demo: experimental data is optional.
+experiment: {}
 output_dir: ../../outputs/runs
 area: 1.0
 length: 1.0

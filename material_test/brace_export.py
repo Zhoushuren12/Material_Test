@@ -16,6 +16,7 @@ import numpy as np
 from material_test.io.experiment_data import load_experiment_data
 
 FIELDS = {'Elastic': [('k','stiffness')], 'Steel01': [('Fy','force'),('k','stiffness'),('b','ratio')],
+          'Steel02': [('Fy','force'),('E0','stiffness'),('b','ratio'),('R0','ratio'),('cR1','ratio'),('cR2','ratio')],
           'SelfCentering': [('k1','stiffness'),('k2','stiffness'),('sigAct','force'),('beta','ratio'),
                            ('epsSlip','length'),('epsBear','length'),('rBear','ratio')]}
 
@@ -27,7 +28,10 @@ def input_identity(config):
     result={'material':config.material.to_mapping(),'modeling':config.modeling.to_mapping(),
             'area':config.area,'length':config.length,'loading':config.loading.to_mapping(),
             'experiment_columns':[config.displacement_column,config.force_column,config.experiment_sheet],
-            'solver':config.solver.to_mapping()}
+            'solver':config.solver.to_mapping(),
+            'units':{'force':config.force_unit,'length':config.length_unit},
+            'material_mode':config.material_mode,
+            'experiment_scales':[config.experiment_displacement_scale,config.experiment_force_scale]}
     for name,path in [('experiment',config.experiment_path),('history',config.loading.history_path),('solver_executable',config.solver.executable_path)]:
         result[name+'_sha256']=hashlib.sha256(Path(path).read_bytes()).hexdigest() if path and Path(path).is_file() else None
     return result
@@ -64,6 +68,8 @@ def export_constitutive(config):
         return {'type':kind,'parameters':{n:v*factors[d] for (n,d),v in zip(fields,values)}}
     def topology(node,length):
         if node.kind=='material':
+            if config.material_mode == 'force_deformation':
+                return material(node.material_tag,1.0,1.0)
             return material(node.material_tag,node.area if node.area is not None else config.area,length)
         weights=[c.length_weight for c in node.children]
         return {'type':node.kind.title(),'name':node.name,'realization':'explicit-axial-network',
@@ -72,7 +78,9 @@ def export_constitutive(config):
     if not all(math.isfinite(v) and v>0 for v in (config.area,config.length)):raise ValueError('面积和长度必须为有限正值')
     return topology(root,config.length)
 
-def build_brace_package(config, *, result_dir, version='1', force_unit='N', displacement_unit='mm'):
+def build_brace_package(config, *, result_dir, version='1', force_unit=None, displacement_unit=None):
+    force_unit = force_unit or config.force_unit
+    displacement_unit = displacement_unit or config.length_unit
     if force_unit not in {'N','kN','MN'} or displacement_unit not in {'mm','cm','m'}:
         raise ValueError('请选择明确的力与长度单位')
     result_dir=Path(result_dir)
@@ -83,19 +91,24 @@ def build_brace_package(config, *, result_dir, version='1', force_unit='N', disp
     simulation_sha=hashlib.sha256((result_dir/'simulation_curve.csv').read_bytes()).hexdigest()
     if simulation_sha != manifest.get('simulation_sha256'):
         raise ValueError('计算结果缺少校验记录或文件已改变，请先重新计算再发布支撑模型')
-    if not config.experiment_path:raise ValueError('发布支撑模型需要实际实验数据及其来源')
-    experiment=load_experiment_data(config.experiment_path,displacement_column=config.displacement_column,
-                                    force_column=config.force_column,sheet_name=config.experiment_sheet)
     simulation=np.loadtxt(result_dir/'simulation_curve.csv',delimiter=',',skiprows=1,ndmin=2)
-    curves=[{'id':'experiment','name':'原始实验','kind':'experimental',
-             'points':np.c_[experiment.displacement,experiment.force].tolist()},
-            {'id':'simulation','name':'当前参数计算','kind':'numerical','points':simulation[:,:2].tolist()}]
+    curves=[]
+    if config.experiment_path:
+        experiment=load_experiment_data(config.experiment_path,displacement_column=config.displacement_column,
+            force_column=config.force_column,sheet_name=config.experiment_sheet,
+            displacement_scale=config.experiment_displacement_scale,force_scale=config.experiment_force_scale)
+        curves.append({'id':'experiment','name':'试验数据（已换算）','kind':'experimental',
+                       'points':np.c_[experiment.displacement,experiment.force].tolist()})
+    curves.append({'id':'simulation','name':'当前参数计算','kind':'numerical','points':simulation[:,:2].tolist()})
     result={'format':'open-analysis-brace-package','schema_version':2,'id':'component_'+uuid4().hex,
             'name':config.material.name,'version':str(version),'units':{'force':force_unit,'displacement':displacement_unit},
             'interfaces':{'type':'two-terminal-axial','ports':['i','j'],'positive':'extension'},
             'topology':{'type':'axial-brace','element_type':'twoNodeLink'},'constitutive':export_constitutive(config),
             'parameters':[],'curves':curves,'story_overrides':[],
-            'evidence':{'experiment_path':str(config.experiment_path),'experiment_sha256':identity['experiment_sha256'],
+            'evidence':{'experiment_path':str(config.experiment_path) if config.experiment_path else None,
+                        'source_type':'experiment-comparison' if config.experiment_path else 'manual-assumption',
+                        'description':'附试验对比；参数是否完成标定需由作者确认' if config.experiment_path else '参数直接输入、未经试验标定',
+                        'experiment_sha256':identity['experiment_sha256'],
                         'input_sha256':manifest['input_sha256'],'input_snapshot':identity,
                         'simulation_sha256':simulation_sha,
                         'run_directory':str(result_dir.resolve()),'exported_at':datetime.now(timezone.utc).isoformat(),

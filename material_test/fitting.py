@@ -15,6 +15,7 @@ from material_test.domain import ExperimentData, FitConfig, MaterialTemplate, Pr
 from material_test.io.experiment_data import load_experiment_data
 from material_test.opensees.runner import run_material_history
 from material_test.plotting import save_overlay_plot
+from material_test.cancellation import AnalysisCancelled
 
 
 class EvaluationBudgetExhausted(RuntimeError):
@@ -47,7 +48,9 @@ class FitResult:
 
 
 class _FittingEvaluator:
-    def __init__(self, config: ProjectConfig, experiment: ExperimentData, run_dir: Path) -> None:
+    def __init__(self, config: ProjectConfig, experiment: ExperimentData, run_dir: Path, progress=None, cancel_check=None) -> None:
+        self.progress = progress
+        self.cancel_check = cancel_check
         if config.fitting is None:
             raise ValueError("fitting configuration is required")
         self.config = config
@@ -71,6 +74,8 @@ class _FittingEvaluator:
         return self._evaluate(x, phase="local")
 
     def _evaluate(self, x: np.ndarray, *, phase: str) -> np.ndarray:
+        if self.cancel_check and self.cancel_check():
+            raise AnalysisCancelled("拟合已取消，原参数未修改")
         if phase == "global":
             if self.global_evaluations >= self.fit_config.max_evaluations:
                 raise EvaluationBudgetExhausted
@@ -85,6 +90,7 @@ class _FittingEvaluator:
         self.total_evaluations += 1
         x = np.asarray(x, dtype=float)
         candidate_dir = self.run_dir / "candidates" / f"evaluation-{self.total_evaluations:05d}"
+        valid = True
         try:
             material = _material_with_values(self.config.material, self.fit_config, x)
             simulation = run_material_history(
@@ -95,24 +101,32 @@ class _FittingEvaluator:
                 area=self.config.area,
                 length=self.config.length,
                 modeling=self.config.modeling,
+                material_mode=self.config.material_mode,
+                cancel_check=self.cancel_check,
             )
             force = _force_at_experiment_steps(simulation, self.experiment)
             residual = (force - self.experiment.force) / self.force_scale
             if not np.isfinite(residual).all():
                 raise ValueError("simulation returned non-finite force values")
+        except AnalysisCancelled:
+            raise
         except Exception:
             # A failed OpenSees candidate must be worse than a viable fit but must
             # not terminate a population-based search.
-            residual = np.full(self.experiment.force.shape, 10.0, dtype=float)
+            valid = False
+            residual = np.full(self.experiment.force.shape, 1.0e6, dtype=float)
 
         value = float(np.mean(residual**2))
-        if value < self.best_value:
+        if valid and value < self.best_value:
             self.best_value = value
             self.best_x = x.copy()
+        if self.progress:
+            total = self.fit_config.max_evaluations + (self.fit_config.local_max_evaluations if self.fit_config.local_refine else 0)
+            self.progress(self.total_evaluations, total, float(np.sqrt(self.best_value)))
         return residual
 
 
-def fit_project(config: ProjectConfig, *, run_dir: Path | None = None) -> FitResult:
+def fit_project(config: ProjectConfig, *, run_dir: Path | None = None, progress=None, cancel_check=None) -> FitResult:
     """Fit selected material parameters to the experiment displacement history."""
     fit_config = config.fitting
     if fit_config is None:
@@ -125,7 +139,7 @@ def fit_project(config: ProjectConfig, *, run_dir: Path | None = None) -> FitRes
 
     run_dir = (run_dir or _default_fit_dir(config.output_dir, config.material.name)).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
-    evaluator = _FittingEvaluator(config, experiment, run_dir)
+    evaluator = _FittingEvaluator(config, experiment, run_dir, progress, cancel_check)
     global_x = _run_global_search(evaluator)
     best_x = global_x
 
@@ -158,6 +172,8 @@ def fit_project(config: ProjectConfig, *, run_dir: Path | None = None) -> FitRes
         area=config.area,
         length=config.length,
         modeling=config.modeling,
+        material_mode=config.material_mode,
+        cancel_check=cancel_check,
     )
     fitted_force = _force_at_experiment_steps(simulation, experiment)
     metrics = _metrics(fitted_force, experiment.force)
@@ -170,7 +186,7 @@ def fit_project(config: ProjectConfig, *, run_dir: Path | None = None) -> FitRes
         header="displacement,force",
         comments="",
     )
-    figure_file = save_overlay_plot(run_dir / "fit_overlay.png", simulation, experiment)
+    figure_file = save_overlay_plot(run_dir / "fit_overlay.png", simulation, experiment, force_unit=config.force_unit, length_unit=config.length_unit)
     material_file = run_dir / "fitted_material.yaml"
     material_file.write_text(yaml.safe_dump(fitted_material.to_mapping(), sort_keys=False), encoding="utf-8")
     summary_file = run_dir / "fit_summary.json"
@@ -309,6 +325,8 @@ def _load_experiment(config: ProjectConfig) -> ExperimentData | None:
         displacement_column=config.displacement_column,
         force_column=config.force_column,
         sheet_name=config.experiment_sheet,
+        displacement_scale=config.experiment_displacement_scale,
+        force_scale=config.experiment_force_scale,
     )
 
 

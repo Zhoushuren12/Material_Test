@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import numpy as np
 
 from material_test.domain import ExperimentData
 
@@ -20,14 +21,18 @@ def load_experiment_data(
     displacement_column: str | int,
     force_column: str | int,
     sheet_name: str | int | None = 0,
+    displacement_scale: float = 1.0,
+    force_scale: float = 1.0,
 ) -> ExperimentData:
+    if not all(np.isfinite(value) and value != 0 for value in (displacement_scale, force_scale)):
+        raise ValueError("试验换算系数必须为有限非零数值；使用负数反转方向")
     path = Path(path)
     frame = _read_table(path, sheet_name=sheet_name)
     displacement = load_numeric_column_from_frame(frame, displacement_column, "displacement")
     force = load_numeric_column_from_frame(frame, force_column, "force")
     return ExperimentData(
-        displacement=displacement,
-        force=force,
+        displacement=displacement * displacement_scale,
+        force=force * force_scale,
         source_path=path,
         displacement_column=displacement_column,
         force_column=force_column,
@@ -60,7 +65,7 @@ def _read_table(path: Path, *, sheet_name: str | int | None = 0, nrows: int | No
         frame.columns = [str(column) for column in frame.columns]
         return frame
     if suffix in {".xlsx", ".xls"}:
-        frame = pd.read_excel(path, sheet_name=sheet_name, nrows=nrows)
+        frame = pd.read_excel(path, sheet_name=0 if sheet_name is None else sheet_name, nrows=nrows)
         frame.columns = [str(column) for column in frame.columns]
         return frame
     raise ValueError(f"unsupported experiment data file type: {path.suffix}")
