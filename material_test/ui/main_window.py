@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QDialog, QDialogButtonBox,
     QInputDialog, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QSizePolicy, QSpinBox, QSplitter, QStackedWidget,
-    QDockWidget, QMenu, QProgressBar, QStyle, QTabWidget, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
+    QDockWidget, QMenu, QProgressBar, QStyle, QTabBar, QTabWidget, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
 
 from material_test.domain import (
@@ -37,9 +37,11 @@ from material_test.ui.plot_canvas import (
     HysteresisPreviewWidget, OverlayPlotWidget, SpecimenOverviewWidget, StagePlotWidget,
 )
 from material_test.ui.topology_editor import TopologyEditor
+from material_test.ui.theme import STYLESHEET
 from material_test.ui.workers import FitWorker, RunWorker
 from material_test.workflow import WorkflowResult
 from material_test.ui.project_session import ProjectSessionMixin
+from material_test.ui.assembly_workflow import AssemblyWorkflowMixin
 from material_test.ui.fitting_workflow import FittingWorkflowMixin
 from material_test.ui.editors import MaterialTagSpinBox, CompactDoubleSpinBox
 from material_test.ui.pages.project import ProjectPage
@@ -56,13 +58,13 @@ PAGES = [
     ("项目与单位", "求解器、单位与本构输入模式"),
     ("试验与加载", "试验可选 · 统一加载来源"),
     ("材料", "添加材料、编辑参数与单材预览"),
-    ("支撑装配", "材料赋值与串并联拓扑"),
+    ("支撑装配", "节点、单元与材料赋予"),
     ("对比与标定", "手动调参、自动拟合与发布"),
 ]
 
 
-class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
-    def __init__(self) -> None:
+class MainWindow(AssemblyWorkflowMixin, ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
+    def __init__(self, *, restore_last_project: bool = True) -> None:
         super().__init__()
         self.setWindowTitle("Material Test · 材料测试与参数拟合")
         self.resize(1460, 900)
@@ -93,6 +95,8 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         self._apply_style()
         self._load_initial_state()
         self._initialize_session()
+        if restore_last_project:
+            self._restore_last_project()
 
     def _build_actions(self) -> None:
         self.load_project_action = QAction("打开项目", self)
@@ -101,11 +105,10 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         self.save_project_action = QAction("保存项目", self)
         self.save_project_action.setShortcut("Ctrl+S")
         self.save_project_action.triggered.connect(self.save_project)
-        file_menu = self.menuBar().addMenu("文件")
         self.save_as_action = QAction("另存为…", self)
         self.save_as_action.setShortcut("Ctrl+Shift+S")
         self.save_as_action.triggered.connect(self.save_project_as)
-        file_menu.addActions([self.load_project_action, self.save_project_action, self.save_as_action])
+        self.addActions([self.load_project_action, self.save_project_action, self.save_as_action])
         self.publish_brace_action = QAction('发布支撑模型到 Structural analysis…', self)
         self.publish_brace_action.setShortcut('Ctrl+Shift+P')
         self.publish_brace_action.triggered.connect(self.publish_brace)
@@ -113,6 +116,7 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
 
     def _build_ui(self) -> None:
         central = QWidget()
+        central.setObjectName("appRoot")
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -123,8 +127,8 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         body.addWidget(self._build_navigation())
         content = QWidget()
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(26, 12, 26, 12)
-        content_layout.setSpacing(8)
+        content_layout.setContentsMargins(22, 18, 22, 14)
+        content_layout.setSpacing(10)
         self.page_title = QLabel()
         self.page_title.setObjectName("pageTitle")
         self.page_subtitle = QLabel()
@@ -135,7 +139,23 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         for builder in (
             ProjectPage, LoadingPage, MaterialPage, AssemblyPage, CalibrationPage,
         ):
-            self.pages.addWidget(builder(self))
+            page = builder(self)
+            # Give split panels a consistent surface and resize affordance.
+            for splitter in page.findChildren(QSplitter):
+                splitter.setChildrenCollapsible(False)
+                splitter.setHandleWidth(10)
+                for index in range(splitter.count()):
+                    panel = splitter.widget(index)
+                    if panel.objectName() or isinstance(panel, (QSplitter, TopologyEditor)):
+                        continue
+                    panel.setObjectName("surfaceCard")
+                    if isinstance(panel, QScrollArea) and panel.widget() is not None:
+                        panel.widget().setObjectName("scrollContent")
+                        if panel.widget().layout() is not None:
+                            panel.widget().layout().setContentsMargins(16, 16, 16, 16)
+                    if panel.layout() is not None:
+                        panel.layout().setContentsMargins(16, 16, 16, 16)
+            self.pages.addWidget(self._wrap_workflow_page(page))
         content_layout.addWidget(self.pages, 1)
         content_layout.addWidget(self._build_page_footer())
         body.addWidget(content, 1)
@@ -157,6 +177,8 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         title.setObjectName("brandTitle")
         self.project_label = QLabel("未保存项目")
         self.project_label.setObjectName("projectLabel")
+        self.project_label.setWordWrap(True)
+        self.project_label.setMaximumWidth(320)
         layout.addWidget(mark)
         layout.addWidget(title)
         layout.addSpacing(12)
@@ -165,9 +187,11 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         open_button = QPushButton("打开")
         open_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton))
         open_button.clicked.connect(self.load_project)
+        self.open_button = open_button
         save_button = QPushButton("保存")
         save_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
         save_button.clicked.connect(self.save_project)
+        self.save_button = save_button
         layout.addWidget(open_button)
         layout.addWidget(save_button)
         return header
@@ -175,7 +199,7 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
     def _build_navigation(self) -> QWidget:
         nav = QFrame()
         nav.setObjectName("navigation")
-        nav.setFixedWidth(252)
+        nav.setFixedWidth(228)
         layout = QVBoxLayout(nav)
         layout.setContentsMargins(14, 22, 14, 18)
         label = QLabel("分析流程")
@@ -246,6 +270,21 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         scroll.setWidget(panel)
         return scroll, layout
 
+    @staticmethod
+    def _wrap_workflow_page(page: QWidget) -> QScrollArea:
+        """Keep every workflow page accessible when its content exceeds the window."""
+        scroll = QScrollArea()
+        scroll.setObjectName("workflowPageScroll")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setAlignment(Qt.AlignmentFlag.AlignTop)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(page)
+        scroll.viewport().setAutoFillBackground(False)
+        page.setAutoFillBackground(False)
+        return scroll
+
     def _path_control(self, edit: QLineEdit, callback, file_mode: bool) -> QWidget:
         widget = QWidget()
         row = QHBoxLayout(widget)
@@ -284,7 +323,7 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
             self._refresh_fitting_preview()
 
     def _navigate_relative(self, offset: int) -> None:
-        self._navigate_to(max(0, min(len(PAGES) - 1, self.pages.currentIndex() + offset)))
+        self._navigate_to(max(0, min(len(PAGES) - 1, self.nav_list.currentRow() + offset)))
 
     def _refresh_project_overview(self, *args) -> None:
         if not hasattr(self, "project_overview"):
@@ -309,7 +348,7 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
             [(steps, history, "位移历程", "#1f5fae")],
             title="加载制度预览",
             x_label="加载步",
-            y_label=f"位移 [{self.length_unit_combo.currentText()}]",
+            y_label=f"{'转角' if self._response_units()[1]=='rad' else '位移'} [{self._response_units()[1]}]",
             zero_axes=True,
         )
         self.loading_preview_note.setText(
@@ -509,6 +548,7 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         self.current_result = None
         self.baseline_result = None
         self._comparison_dirty = False
+        self._clear_assembly_deformation('项目已切换，等待计算', reset=True)
         if hasattr(self, "plot_widget"):
             self._refresh_comparison_view()
 
@@ -565,48 +605,7 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
 
     def _apply_style(self) -> None:
         self.setFont(QFont("Microsoft YaHei UI", 9))
-        self.setStyleSheet("""
-            QMainWindow, QWidget { background: #f6f8fb; color: #172033; }
-            QLabel { background: transparent; }
-            QMenuBar { background: #ffffff; border-bottom: 1px solid #dde3ec; padding: 2px 8px; }
-            QMenuBar::item:selected, QMenu::item:selected { background: #eaf2ff; color: #174ea6; }
-            #appHeader { background: #ffffff; border-bottom: 1px solid #dfe5ee; }
-            #brandMark { min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px; background: #1f5fae; color: white; border-radius: 5px; font-weight: 700; }
-            #brandTitle { font-size: 17px; font-weight: 700; color: #152238; }
-            #projectLabel { color: #64748b; }
-            #navigation { background: #17243a; border: none; }
-            #navCaption { color: #9fb0c9; font-size: 11px; font-weight: 600; padding: 0 8px 6px 8px; }
-            #navList { background: transparent; color: #c9d4e4; outline: none; }
-            #navList::item { padding: 11px 10px; margin: 2px 0; border-radius: 4px; }
-            #navList::item:selected { background: #27486f; color: #ffffff; }
-            #navList::item:hover:!selected { background: #20344f; }
-            #statusPill { background: #243954; color: #b9c8da; padding: 8px; border-radius: 4px; }
-            #pageTitle { font-size: 24px; font-weight: 700; color: #162238; }
-            #pageSubtitle { color: #6b778c; font-size: 10px; }
-            #sectionTitle { font-size: 13px; font-weight: 700; color: #263750; }
-            #pageCounter { color: #778397; }
-            QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTableWidget, QTreeWidget { background: #ffffff; border: 1px solid #cfd7e3; border-radius: 4px; selection-background-color: #dceaff; }
-            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { min-height: 30px; padding: 0 8px; }
-            QPlainTextEdit { padding: 7px; }
-            QTableWidget, QTreeWidget { gridline-color: #e5eaf1; alternate-background-color: #f8fafc; }
-            QHeaderView::section { background: #eef2f7; color: #46556b; border: none; border-bottom: 1px solid #d7dee9; padding: 8px; font-weight: 600; }
-            QTabWidget::pane { border: 1px solid #cfd7e3; background: #ffffff; }
-            QTabBar::tab { background: #eef2f7; color: #526174; padding: 8px 14px; border: 1px solid #d7dee9; border-bottom: none; }
-            QTabBar::tab:selected { background: #ffffff; color: #174ea6; font-weight: 600; }
-            QPushButton { background: #ffffff; border: 1px solid #c8d1de; border-radius: 4px; min-height: 32px; padding: 0 13px; }
-            QPushButton:hover { background: #f0f5fb; border-color: #9badc3; }
-            QPushButton:disabled { color: #9aa6b6; background: #eef1f5; }
-            #primaryButton { background: #1f5fae; color: #ffffff; border-color: #1f5fae; font-weight: 600; }
-            #primaryButton:hover { background: #174f96; }
-            #dangerButton { color: #b42318; border-color: #e0aaa5; }
-            #dangerButton:hover { background: #fff1f0; border-color: #c85d55; }
-            QToolButton { background: #ffffff; border: 1px solid #c8d1de; border-radius: 4px; min-width: 30px; min-height: 30px; }
-            #dangerTool { color: #b42318; border-color: #e0aaa5; }
-            #dangerTool:hover { background: #fff1f0; border-color: #c85d55; }
-            QSplitter::handle { background: #dfe5ee; }
-            #runState { color: #64748b; font-weight: 600; }
-            #previewNote { color: #64748b; padding: 4px 2px; }
-        """)
+        self.setStyleSheet(STYLESHEET)
 
     def _load_initial_state(self) -> None:
         self.solver_path_edit.setText(str(ROOT / "OS_terminal" / "OpenSees.exe"))
@@ -615,11 +614,7 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         self._populate_material(self._empty_material_template())
         self.current_template_path = None
         self.template_path_edit.setText("空材料集合（请从材料库添加）")
-        self.topology_editor.set_root(TopologyNode(
-            kind="material",
-            material_tag=None,
-            name="E01",
-        ))
+        self.topology_editor.new_empty()
         self._sync_fit_table()
         self._update_model_status()
         self._refresh_comparison_view()
@@ -875,51 +870,7 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
             self.material_preview_note.setText(curve.note)
 
     def calculate_model_preview(self) -> None:
-        try:
-            base_material = self._material_from_ui()
-            rendered_material = MaterialTemplate(
-                name=base_material.name,
-                command=base_material.render_command(),
-                tag=base_material.tag,
-            )
-            modeling = self.topology_editor.modeling()
-            protocol_mode = str(self.model_preview_protocol_combo.currentData())
-            if protocol_mode == "standard" and self._material_commands:
-                row = max(0, min(self._selected_material_row, len(self._material_commands) - 1))
-                history = standard_preview_history(self._material_commands[row].material_type)
-                if history is None:
-                    history = history_from_protocol(self._loading_protocol_from_ui())
-            else:
-                history = history_from_protocol(self._loading_protocol_from_ui())
-            curve = calculate_material_preview(
-                solver=self._solver_from_ui(),
-                material=rendered_material,
-                material_type="ExplicitModel",
-                area=float(self.area_spin.value()),
-                length=float(self.length_spin.value()),
-                displacement_history=history,
-                modeling=modeling,
-                material_mode=self.material_mode_combo.currentData(),
-            )
-        except Exception as exc:
-            self.model_preview_plot.clear("整体曲线计算失败")
-            self.model_preview_note.setText(preview_error_summary(exc))
-            self._append_log(f"支撑装配曲线计算失败：\n{exc}")
-            return
-
-        if curve.available:
-            self.model_preview_plot.update_curve(
-                curve.displacement,
-                curve.force,
-                title="支撑装配整体滞回响应",
-                experiment=self._comparison_experiment(),
-            )
-            self.model_preview_note.setText(
-                f"OpenSees 计算结果 · 面积 {self.area_spin.value():g} · 总长度 {self.length_spin.value():g}"
-            )
-        else:
-            self.model_preview_plot.clear("当前协议无法计算整体响应")
-            self.model_preview_note.setText(curve.note)
+        self.open_assembly_response()
 
     def _solver_from_ui(self) -> SolverConfig:
         solver_text = self.solver_path_edit.text().strip()
@@ -981,7 +932,7 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
             self.current_result.simulation,
             experiment=self._comparison_experiment(),
             baseline=baseline,
-            force_unit=self.force_unit_combo.currentText(), length_unit=self.length_unit_combo.currentText(),
+            force_unit=self._response_units()[0], length_unit=self._response_units()[1],
         )
         self._append_log(f"已导出当前对比图：{output_path}")
 
@@ -1024,6 +975,11 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
 
     def _populate_project_fields(self, config: ProjectConfig) -> None:
         self._reset_comparison_results()
+        if getattr(self,'assembly_response_dialog',None) is not None:
+            self.assembly_response_plot.clear('暂无当前项目的计算结果')
+            self.assembly_response_export.setEnabled(False)
+            self.assembly_response_cancel.setEnabled(False)
+            self.assembly_response_status.setText('项目已切换，等待计算')
         self._select_combo_text(self.force_unit_combo, config.force_unit)
         self._select_combo_text(self.length_unit_combo, config.length_unit)
         self._select_combo_data(self.material_mode_combo, config.material_mode)
@@ -1039,8 +995,12 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         self.current_template_path = config.material_template_path
         self.template_path_edit.setText(str(config.material_template_path or ""))
         self._populate_material(config.material)
+        self.topology_editor.default_area = config.area
+        self.topology_editor.default_length = config.length
+        self.topology_editor.force_deformation_mode = config.material_mode == 'force_deformation'
         self.topology_editor.set_modeling(config.modeling, config.material.tag)
-        self.amplitudes_edit.setPlainText(", ".join(f"{value:g}" for value in config.loading.amplitudes))
+        values = config.loading.samples if config.loading.source=='samples' else config.loading.amplitudes
+        self.amplitudes_edit.setPlainText(", ".join(f"{value:.17g}" for value in values))
         self.du_spin.setValue(float(config.loading.du))
         self.history_path_edit.setText(str(config.loading.history_path or ""))
         self.append_zero_check.setChecked(config.loading.append_zero)
@@ -1061,7 +1021,6 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         self.area_spin.setEnabled(config.material_mode != "force_deformation")
         self.length_spin.setEnabled(config.material_mode != "force_deformation")
         self.topology_editor.force_deformation_mode = config.material_mode == "force_deformation"
-        self.topology_editor.area_spin.setEnabled(config.material_mode != "force_deformation")
         self._update_model_status()
         self._update_material_usage()
         self._refresh_project_overview()
@@ -1070,6 +1029,10 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         self._refresh_fitting_preview()
 
     def _populate_material(self, template: MaterialTemplate, *, selected_tag: int | None = None) -> None:
+        # Parameter widgets belong to the previous resource set. Clear them
+        # before selecting commands from the new set, which commits widgets.
+        self.param_table.setRowCount(0)
+        self._selected_material_row = -1
         self.material_name_edit.setText(template.name)
         self._material_template_tag = int(template.tag)
         self._material_template_description = template.description
@@ -1315,6 +1278,7 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         self.fit_population_spin.setValue(fitting.population_size)
         self.fit_local_refine_check.setChecked(fitting.local_refine)
         self.fit_local_evaluations_spin.setValue(fitting.local_max_evaluations)
+        self.fit_local_diff_step_spin.setValue(fitting.local_diff_step)
         selected = {parameter.name: parameter for parameter in fitting.parameters}
         for row in range(self.fit_table.rowCount()):
             spec = selected.get(self._table_text(row, 1, self.fit_table))
@@ -1448,6 +1412,7 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
             population_size=int(self.fit_population_spin.value()),
             local_refine=self.fit_local_refine_check.isChecked(),
             local_max_evaluations=int(self.fit_local_evaluations_spin.value()),
+            local_diff_step=float(self.fit_local_diff_step_spin.value()),
             **getattr(self, "_fit_options", {}),
         )
 
@@ -1484,7 +1449,7 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
             return
         try:
             modeling = self.topology_editor.modeling(require_assigned=True)
-            count = len(modeling.root.material_tags()) if modeling.root else 1
+            count = len(modeling.assembly['elements']) if modeling.assembly is not None else len(modeling.root.material_tags()) if modeling.root else 1
         except ValueError:
             self.model_status.setText("模型待校验")
             return
@@ -1496,6 +1461,7 @@ class MainWindow(ProjectSessionMixin, FittingWorkflowMixin, QMainWindow):
         self._update_model_status()
         self._update_material_usage()
         self._mark_comparison_dirty("支撑装配已修改")
+        self._units_changed(mark=False)
         if hasattr(self, "model_preview_plot"):
             self.model_preview_plot.set_stale(True)
             self.model_preview_note.setText("待更新 · 当前整体曲线已失效")

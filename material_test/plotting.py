@@ -91,8 +91,8 @@ def create_comparison_figure(
         ax.plot(
             experiment.displacement,
             experiment.force,
-            linewidth=2,
-            label="试验", color="#111827",
+            linewidth=1.0,
+            label="试验曲线", color="#111827",
         )
         x_values.append(np.asarray(experiment.displacement, dtype=float))
         y_values.append(np.asarray(experiment.force, dtype=float))
@@ -100,7 +100,7 @@ def create_comparison_figure(
         ax.plot(
             baseline.displacement,
             baseline.force,
-            linewidth=2,
+            linewidth=1.0,
             linestyle="--",
             label="基准", color="#94a3b8",
         )
@@ -109,8 +109,9 @@ def create_comparison_figure(
     ax.plot(
         current.displacement,
         current.force,
-        linewidth=2.0,
-        label="当前", color="#1f5fae",
+        linewidth=1.0,
+        linestyle="--",
+        label="拟合曲线", color="#1f5fae",
     )
     x_values.append(np.asarray(current.displacement, dtype=float))
     y_values.append(np.asarray(current.force, dtype=float))
@@ -153,8 +154,8 @@ def _style_publication_comparison_axes(
     axes.set_ylim(float(y_ticks[0]), float(y_ticks[-1]))
     axes.minorticks_off()
     axes.tick_params(axis="both", direction="in", which="major", labelsize=18)
-    axes.set_xlabel(f"位移 [{length_unit}]", fontsize=25, fontname="SimSun")
-    axes.set_ylabel(f"力 [{force_unit}]", fontsize=25, fontname="SimSun")
+    axes.set_xlabel(f"{'转角' if length_unit=='rad' else '位移'} [{length_unit}]", fontsize=25, fontname="SimSun")
+    axes.set_ylabel(f"{'力矩' if length_unit=='rad' else '力'} [{force_unit}]", fontsize=25, fontname="SimSun")
     axes.grid(True, which="major", linewidth=0.65, alpha=0.22)
 
 

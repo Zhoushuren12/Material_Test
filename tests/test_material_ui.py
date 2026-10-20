@@ -36,6 +36,21 @@ class MaterialSelectionUiTests(unittest.TestCase):
         self.window._project_dirty = False
         self.window.close()
 
+    def test_automatic_fit_difference_step_survives_editor_round_trip(self) -> None:
+        from material_test.domain import FitConfig, FitParameterSpec
+        material = self.window._material_from_ui()
+        name = material.parameters[0].name
+        self.window._sync_fit_table()
+        fitting = FitConfig([FitParameterSpec(name, 1., 10000.)], local_diff_step=.0002)
+        self.window._populate_fitting(fitting)
+        self.assertEqual(self.window.fit_local_diff_step_spin.value(), .0002)
+        self.window._project_dirty = False
+        self.window.fit_local_diff_step_spin.setValue(.0003)
+        self.assertTrue(self.window._project_dirty)
+        saved = self.window._fitting_from_ui(material)
+        self.assertEqual(saved.local_diff_step, .0003)
+        self.assertEqual(saved.parameters[0].name, name)
+
     def test_tag_arrows_switch_material_and_preserve_edits(self) -> None:
         base = self.window._material_from_ui()
         library = load_material_library()

@@ -37,6 +37,8 @@ def input_identity(config):
     return result
 
 def export_constitutive(config):
+    if config.modeling.assembly is not None:
+        raise ValueError('显式节点装配尚不能发布为固定轴向串并联本构；模型可保存、计算和标定。')
     commands={}
     for line in config.material.render_command().splitlines():
         tokens=shlex.split(line,comments=True)

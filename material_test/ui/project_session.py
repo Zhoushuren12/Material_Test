@@ -3,15 +3,18 @@ from __future__ import annotations
 
 from pathlib import Path
 import numpy as np
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QSettings, QTimer, Qt
 from PySide6.QtWidgets import QComboBox, QFileDialog, QMessageBox, QTableWidgetItem
 from material_test.domain import LoadingProtocol
-from material_test.io.project_config import load_project_config, save_project_config
+from material_test.io.project_config import load_project_config, project_kind, save_project_config
 from material_test.io.experiment_data import load_experiment_data
+
+LAST_PROJECT_KEY = 'session/last_project'
 
 
 class ProjectSessionMixin:
     def _initialize_session(self):
+        self._session_settings = QSettings('Open Analysis System', 'Material Test')
         self._auto_timer = QTimer(self)
         self._auto_timer.setSingleShot(True)
         self._auto_timer.setInterval(400)
@@ -28,6 +31,7 @@ class ProjectSessionMixin:
             getattr(self, name).currentIndexChanged.connect(lambda *_: self._mark_comparison_dirty('数据列已修改'))
         self.append_zero_check.toggled.connect(lambda *_: self._mark_comparison_dirty('加载制度已修改'))
         self.fit_local_refine_check.toggled.connect(lambda *_: self._mark_project_dirty())
+        self.fit_local_diff_step_spin.valueChanged.connect(lambda *_: self._mark_project_dirty())
         self.fit_algorithm_combo.currentIndexChanged.connect(lambda *_: self._mark_project_dirty())
         self.loading_source_combo.currentIndexChanged.connect(self._source_changed)
         self.force_unit_combo.currentIndexChanged.connect(self._units_changed)
@@ -46,8 +50,34 @@ class ProjectSessionMixin:
         self._update_project_title()
         self._units_changed(mark=False)
         self.topology_editor.force_deformation_mode = self.material_mode_combo.currentData() == 'force_deformation'
-        self.topology_editor.area_spin.setEnabled(not self.topology_editor.force_deformation_mode)
         self.statusBar().hide()
+
+    def _last_project_path(self):
+        value = self._session_settings.value(LAST_PROJECT_KEY, '', type=str)
+        return Path(value).expanduser().resolve() if value else None
+
+    def _remember_project(self, path):
+        self._session_settings.setValue(LAST_PROJECT_KEY, str(Path(path).resolve()))
+        self._session_settings.sync()
+
+    def _restore_last_project(self):
+        path = self._last_project_path()
+        if path is None:
+            return
+        blank = self._config_from_ui(require_ready=False)
+        try:
+            self._open_project_path(path)
+        except Exception as exc:
+            self._session_settings.remove(LAST_PROJECT_KEY)
+            self._session_settings.sync()
+            # A malformed project may fail after some fields were populated.
+            self._populate_from_config(blank)
+            self.current_project_path = None
+            self._project_dirty = False
+            self._update_project_title()
+            self._update_source_labels()
+            self._navigate_to(0)
+            self._append_log(f'无法恢复上次项目：{path}\n{exc}\n已创建空白项目，请重新打开文件。')
 
     def _mark_project_dirty(self, *args):
         if getattr(self, '_loading_ui', True):
@@ -60,15 +90,19 @@ class ProjectSessionMixin:
         suffix = ' *' if self._project_dirty else ''
         self.setWindowTitle(f'{name}{suffix} · Material Test')
         self.project_label.setText(name + suffix)
+        self.project_label.setToolTip(str(self.current_project_path or Path.cwd()))
 
     def _confirm_unsaved(self):
+        return self._confirm_material_unsaved()
+
+    def _confirm_material_unsaved(self):
         if not self._project_dirty:
             return True
         answer = QMessageBox.question(self, '保存项目修改', '当前项目有未保存的修改，是否保存？',
             QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Save)
         if answer == QMessageBox.StandardButton.Save:
-            return self.save_project()
+            return self.save_project(_material_only=True)
         return answer == QMessageBox.StandardButton.Discard
 
     def _confirm_material_replacement(self, template):
@@ -76,21 +110,31 @@ class ProjectSessionMixin:
             return True
         from material_test.material_commands import parse_material_commands
         tags = {item.tag for item in parse_material_commands(template)}
-        root = self.topology_editor.modeling(require_assigned=False).root
+        modeling = self.topology_editor.modeling(require_assigned=False)
+        root = modeling.root
         cleared = []
         def walk(node):
             if node.kind == 'material' and node.material_tag is not None and node.material_tag not in tags:
                 cleared.append(f'{node.name or "单元"} · Tag {node.material_tag}')
             for child in node.children:
                 walk(child)
-        walk(root)
+        if root is not None:
+            walk(root)
+        else:
+            from material_test.explicit_assembly import material_tags
+            for element in modeling.assembly['elements']:
+                for tag in material_tags(element):
+                    if tag is not None and tag not in tags:
+                        cleared.append(f"{element.get('name') or 'E'+str(element['tag'])} · Tag {tag}")
         text = f'将替换全部 {len(self._material_commands)} 个材料定义。\n'
         text += '以下单元将保留但解除材料赋值：\n' + '\n'.join(cleared) if cleared else '现有同 Tag 的单元将使用新材料定义。'
         return QMessageBox.question(self, '确认替换材料集合', text,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel) == QMessageBox.StandardButton.Yes
 
-    def save_project(self, *args, save_as=False):
+    def save_project(self, *args, save_as=False, _material_only=False):
+        if self._analysis_busy():
+            return False
         path = self.current_project_path
         if save_as or path is None:
             selected, _ = QFileDialog.getSaveFileName(self, '另存为项目' if save_as else '保存项目',
@@ -106,6 +150,7 @@ class ProjectSessionMixin:
         self.current_project_path = path.resolve()
         self._project_dirty = False
         self._update_project_title()
+        self._remember_project(self.current_project_path)
         self._append_log(f'已保存项目：{path}')
         return True
 
@@ -113,28 +158,34 @@ class ProjectSessionMixin:
         return self.save_project(save_as=True)
 
     def load_project(self):
-        if self._thread is not None or not self._confirm_unsaved():
+        if self._analysis_busy() or not self._confirm_unsaved():
             return
-        path, _ = QFileDialog.getOpenFileName(self, '打开项目', str(Path.cwd()), 'YAML (*.yaml *.yml)')
+        previous = self.current_project_path or self._last_project_path()
+        directory = previous.parent if previous else Path.cwd()
+        path, _ = QFileDialog.getOpenFileName(self, '打开项目', str(directory), 'YAML (*.yaml *.yml)')
         if not path:
             return
         try:
-            config = load_project_config(path)
-            self._loading_ui = True
-            self._populate_from_config(config)
+            self._open_project_path(path)
         except Exception as exc:
             QMessageBox.critical(self, '打开项目', str(exc))
+
+    def _open_project_path(self, path):
+        path = Path(path).expanduser().resolve()
+        if project_kind(path) == 'component-2d':
+            self.import_component_project(path)
             return
-        finally:
-            self._loading_ui = False
-        self.current_project_path = Path(path).resolve()
+        config = load_project_config(path)
+        self._populate_from_config(config)
+        self.current_project_path = path
         self._project_dirty = False
         self._update_project_title()
         self._update_source_labels()
+        self._remember_project(path)
         self._append_log(f'已打开项目：{path}')
 
     def closeEvent(self, event):
-        if self._thread is not None:
+        if self._analysis_busy():
             answer = QMessageBox.question(self, '任务正在运行', '取消当前任务后关闭窗口？',
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
             if answer == QMessageBox.StandardButton.Yes:
@@ -142,7 +193,7 @@ class ProjectSessionMixin:
                 self.cancel_analysis()
             event.ignore()
             return
-        if self._confirm_unsaved():
+        if self._confirm_material_unsaved():
             self._auto_timer.stop()
             event.accept()
         else:
@@ -159,6 +210,7 @@ class ProjectSessionMixin:
         path = self.history_path_edit.text().strip()
         return LoadingProtocol(source=source,
             amplitudes=self._parse_amplitudes() if source == 'amplitudes' else [],
+            samples=self._parse_amplitudes() if source == 'samples' else [],
             du=self.du_spin.value(), history_path=Path(path) if path else None,
             history_column=self.history_column_combo.currentText() or None,
             history_sheet=getattr(self, '_history_sheet', 0),
@@ -169,7 +221,8 @@ class ProjectSessionMixin:
 
     def _source_changed(self, *args):
         source = self.loading_source_combo.currentData()
-        self.amplitudes_edit.setEnabled(source == 'amplitudes')
+        self.amplitudes_edit.setEnabled(source in ('amplitudes','samples'))
+        self.loading_values_label.setText('有序采样值' if source=='samples' else '位移幅值')
         self.du_spin.setEnabled(source == 'amplitudes')
         self.history_column_combo.setEnabled(source == 'external')
         self.history_scale_spin.setEnabled(source == 'external')
@@ -180,7 +233,8 @@ class ProjectSessionMixin:
 
     def _update_source_labels(self, *args):
         source = self.loading_source_combo.currentText()
-        text = f'当前加载：{source} · 位移 [{self.length_unit_combo.currentText()}]'
+        _,length = self._response_units()
+        text = f'当前加载：{source} · {"转角" if length=="rad" else "位移"} [{length}]'
         if self.loading_source_combo.currentData() == 'external':
             text += ' · ' + Path(self.history_path_edit.text()).name
         elif self.loading_source_combo.currentData() == 'experiment':
@@ -197,7 +251,6 @@ class ProjectSessionMixin:
             self.length_spin.setValue(1.0)
         self.area_spin.setEnabled(not direct)
         self.length_spin.setEnabled(not direct)
-        self.topology_editor.area_spin.setEnabled(not direct)
         self.topology_editor.force_deformation_mode = direct
         self._units_changed()
 
@@ -208,7 +261,7 @@ class ProjectSessionMixin:
         for name in ('plot_widget', 'material_preview_plot', 'model_preview_plot', 'experiment_preview_plot', 'fitting_preview_plot'):
             plot = getattr(self, name, None)
             if plot is not None:
-                plot.set_units(force, length)
+                plot.set_units(*(self._response_units() if name!='material_preview_plot' else (force,length)))
         self._update_source_labels()
         self._populate_comparison_parameters()
         self._refresh_loading_preview()
@@ -217,9 +270,37 @@ class ProjectSessionMixin:
         if mark:
             self._mark_comparison_dirty('单位或输入模式已修改')
 
+    def _response_units(self):
+        force,length = self.force_unit_combo.currentText(),self.length_unit_combo.currentText()
+        graph = getattr(self.topology_editor,'graph',None)
+        if graph and graph['control']['dof']==3:
+            return f'{force}*{length}','rad'
+        return force,length
+
+    def _parameter_response(self,parameter):
+        editor=self.topology_editor
+        if editor._legacy is None:
+            commands={c.tag:c for c in self._material_commands}
+            responses=set()
+            def contains(tag,active=()):
+                command=commands.get(tag)
+                if command is None or tag in active: return False
+                return parameter.name in command.parameter_names or any(contains(t,(*active,tag)) for t in command.referenced_tags)
+            for e in editor.graph['elements']:
+                if e['type'] in ('truss','corotTruss') and contains(e.get('material')):
+                    responses.add('stress_strain')
+                elif e['type'] in ('twoNodeLink','zeroLength'):
+                    for tag,dof in zip(e['materials'],e['directions']):
+                        if contains(tag): responses.add('moment_rotation' if dof==3 else 'force_deformation')
+            if len(responses)==1: return responses.pop()
+        return self.material_mode_combo.currentData()
+
     def _parameter_unit(self, parameter):
         force, length = self.force_unit_combo.currentText(), self.length_unit_combo.currentText()
-        direct = self.material_mode_combo.currentData() == 'force_deformation'
+        response=self._parameter_response(parameter)
+        if response=='moment_rotation':
+            force,length=f'{force}*{length}','rad'
+        direct = response != 'stress_strain'
         stress = force if direct else f'{force}/{length}²'
         return {'dimensionless':'无量纲', 'force':stress, 'deformation':length if direct else '应变',
                 'model stress unit':stress, 'model strain unit':length if direct else '应变',
@@ -232,10 +313,13 @@ class ProjectSessionMixin:
 
     def _parameter_description(self, parameter):
         text = parameter.description.split('·')[-1].strip()
-        if self.material_mode_combo.currentData() == 'force_deformation':
+        response=self._parameter_response(parameter)
+        if response != 'stress_strain':
             text = text.replace('弹性模量', '刚度').replace('屈服强度', '屈服力').replace('应力', '力')
             if parameter.unit in ('strain', 'model strain unit', 'deformation'):
                 text = text.replace('应变', '变形')
+        if response=='moment_rotation':
+            text=text.replace('屈服力','屈服力矩').replace('应力','力矩').replace('变形','转角')
         return text
 
     def _comparison_experiment(self):
@@ -265,6 +349,7 @@ class ProjectSessionMixin:
                   'complete':'#15803d', 'failed':'#b91c1c'}
         color = colors.get(state, colors['waiting'])
         self.run_state_label.setText(text)
+        self._material_status = (text, state)
         self.run_state_label.setStyleSheet(f'color: {color}; font-weight:600;')
         self.statusBar().clearMessage()
 

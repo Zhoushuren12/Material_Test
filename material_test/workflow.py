@@ -42,6 +42,7 @@ def run_project(config: ProjectConfig, *, run_dir: Path | None = None, cancel_ch
         length=config.length,
         modeling=config.modeling,
         material_mode=config.material_mode,
+        force_unit=config.force_unit, length_unit=config.length_unit,
         cancel_check=cancel_check,
     )
 
@@ -53,7 +54,9 @@ def run_project(config: ProjectConfig, *, run_dir: Path | None = None, cancel_ch
         header="displacement,force",
         comments="",
     )
-    figure_file = save_overlay_plot(run_dir / "overlay.png", simulation, experiment, force_unit=config.force_unit, length_unit=config.length_unit)
+    from material_test.explicit_assembly import response_units
+    force_unit,length_unit = response_units(config)
+    figure_file = save_overlay_plot(run_dir / "overlay.png", simulation, experiment, force_unit=force_unit, length_unit=length_unit)
     if checksum(input_identity(config)) != checksum(identity):
         raise ValueError('计算期间输入发生变化，请重新计算以建立可靠的实验与计算来源')
     (run_dir / 'input-manifest.json').write_text(

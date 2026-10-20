@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QDoubleSpinBox,
+    QFrame,
+    QHeaderView,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSplitter,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -21,7 +23,8 @@ from PySide6.QtWidgets import (
 )
 
 from material_test.domain import ModelingConfig, TopologyNode
-from material_test.modeling import compile_topology
+from material_test.ui.editors import CompactDoubleSpinBox
+from material_test.ui.topology_preview import TopologyPreview
 
 
 KIND_LABELS = {
@@ -29,194 +32,6 @@ KIND_LABELS = {
     "series": "串联组",
     "parallel": "并联组",
 }
-
-
-class TopologyPreview(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._root: TopologyNode | None = None
-        self._error = ""
-        self._warning = ""
-        self.setMinimumSize(420, 140)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-    def set_topology(self, root: TopologyNode | None) -> None:
-        self._root = root
-        self._error = ""
-        self._warning = ""
-        if root is not None:
-            try:
-                root.validate(require_assigned=False)
-            except ValueError as exc:
-                self._error = str(exc)
-            if not self._error and self._has_unassigned_material(root):
-                self._warning = "存在未赋值材料的单元"
-        self.update()
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#f7f9fc"))
-        if self._root is None:
-            self._draw_centered(painter, "尚未创建模型", QColor("#6b7280"))
-            return
-        if self._error:
-            self._draw_centered(painter, self._error, QColor("#b45309"))
-            return
-
-        compiled = None
-        if not self._warning:
-            try:
-                compiled = compile_topology(self._root)
-            except ValueError as exc:
-                self._draw_centered(painter, str(exc), QColor("#b45309"))
-                return
-
-        margin_x = 58.0
-        x0 = margin_x
-        x1 = max(x0 + 160.0, self.width() - margin_x)
-        y = self.height() / 2.0
-        node_counter = [2]
-        painter.setFont(QFont("Microsoft YaHei UI", 9))
-        element_counter = [0]
-        self._draw_component(
-            painter, self._root, QPointF(x0, y), QPointF(x1, y), 1, 2,
-            node_counter, element_counter,
-        )
-        self._draw_node(painter, QPointF(x0, y), 1, fixed=True)
-        self._draw_node(painter, QPointF(x1, y), 2, controlled=True)
-
-        summary = (
-            f"节点 {len(compiled.nodes)}    单元 {len(compiled.elements)}"
-            if compiled is not None
-            else f"单元 {self._component_count(self._root)}    {self._warning}"
-        )
-        painter.setPen(QColor("#64748b"))
-        painter.drawText(18, 26, summary)
-
-    @staticmethod
-    def _component_count(component: TopologyNode) -> int:
-        if component.kind == "material":
-            return 1
-        return sum(TopologyPreview._component_count(child) for child in component.children)
-
-    @staticmethod
-    def _has_unassigned_material(component: TopologyNode) -> bool:
-        if component.kind == "material":
-            return component.material_tag is None
-        return any(TopologyPreview._has_unassigned_material(child) for child in component.children)
-
-    def _draw_component(
-        self,
-        painter: QPainter,
-        component: TopologyNode,
-        start: QPointF,
-        end: QPointF,
-        start_tag: int,
-        end_tag: int,
-        node_counter: list[int],
-        element_counter: list[int],
-    ) -> None:
-        if component.kind == "material":
-            element_counter[0] += 1
-            self._draw_material(painter, component, start, end, element_counter[0])
-            return
-
-        if component.kind == "series":
-            total = sum(child.length_weight for child in component.children)
-            current = start
-            current_tag = start_tag
-            used = 0.0
-            for index, child in enumerate(component.children):
-                last = index == len(component.children) - 1
-                used += child.length_weight
-                ratio = used / total
-                next_point = end if last else QPointF(start.x() + (end.x() - start.x()) * ratio, start.y())
-                if last:
-                    next_tag = end_tag
-                else:
-                    node_counter[0] += 1
-                    next_tag = node_counter[0]
-                self._draw_component(
-                    painter, child, current, next_point, current_tag, next_tag,
-                    node_counter, element_counter,
-                )
-                if not last:
-                    self._draw_node(painter, next_point, next_tag)
-                current = next_point
-                current_tag = next_tag
-            return
-
-        count = len(component.children)
-        spacing = min(74.0, max(42.0, (self.height() - 120.0) / max(count - 1, 1)))
-        offsets = [(index - (count - 1) / 2.0) * spacing for index in range(count)]
-        branch_in = start.x() + min(42.0, (end.x() - start.x()) * 0.14)
-        branch_out = end.x() - min(42.0, (end.x() - start.x()) * 0.14)
-        wire_pen = QPen(QColor("#94a3b8"), 2.0)
-        for child, offset in zip(component.children, offsets):
-            branch_start = QPointF(branch_in, start.y() + offset)
-            branch_end = QPointF(branch_out, end.y() + offset)
-            painter.setPen(wire_pen)
-            painter.drawLine(start, branch_start)
-            painter.drawLine(branch_end, end)
-            self._draw_component(
-                painter, child, branch_start, branch_end, start_tag, end_tag,
-                node_counter, element_counter,
-            )
-
-    @staticmethod
-    def _draw_material(
-        painter: QPainter,
-        component: TopologyNode,
-        start: QPointF,
-        end: QPointF,
-        element_tag: int,
-    ) -> None:
-        mid_x = (start.x() + end.x()) / 2.0
-        center_y = (start.y() + end.y()) / 2.0
-        box_width = min(108.0, max(64.0, abs(end.x() - start.x()) * 0.48))
-        left = QPointF(mid_x - box_width / 2.0, center_y)
-        right = QPointF(mid_x + box_width / 2.0, center_y)
-        painter.setPen(QPen(QColor("#64748b"), 2.0))
-        painter.drawLine(start, left)
-        painter.drawLine(right, end)
-        rect = (mid_x - box_width / 2.0, center_y - 17.0, box_width, 34.0)
-        painter.setPen(QPen(QColor("#2563eb"), 1.6))
-        painter.setBrush(QColor("#eaf2ff"))
-        painter.drawRoundedRect(*rect, 4.0, 4.0)
-        painter.setPen(QColor("#173b70"))
-        label = component.name or f"E{element_tag}"
-        material_label = "未赋值" if component.material_tag is None else f"M{component.material_tag}"
-        label = f"{label} · {material_label}"
-        painter.drawText(int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]), Qt.AlignmentFlag.AlignCenter, label)
-
-    @staticmethod
-    def _draw_node(
-        painter: QPainter,
-        point: QPointF,
-        tag: int,
-        *,
-        fixed: bool = False,
-        controlled: bool = False,
-    ) -> None:
-        painter.setPen(QPen(QColor("#0f172a"), 1.4))
-        painter.setBrush(QColor("#0f172a"))
-        painter.drawEllipse(point, 4.5, 4.5)
-        painter.setPen(QColor("#475569"))
-        painter.drawText(int(point.x() - 14), int(point.y() + 22), 28, 18, Qt.AlignmentFlag.AlignCenter, str(tag))
-        if fixed:
-            painter.setPen(QPen(QColor("#dc2626"), 2.0))
-            painter.drawLine(QPointF(point.x() - 8, point.y() + 9), QPointF(point.x() + 8, point.y() + 9))
-        if controlled:
-            painter.setPen(QPen(QColor("#16a34a"), 2.0))
-            painter.drawLine(QPointF(point.x() - 14, point.y() - 18), QPointF(point.x() + 2, point.y() - 18))
-            painter.drawLine(QPointF(point.x() + 2, point.y() - 18), QPointF(point.x() - 4, point.y() - 23))
-            painter.drawLine(QPointF(point.x() + 2, point.y() - 18), QPointF(point.x() - 4, point.y() - 13))
-
-    def _draw_centered(self, painter: QPainter, text: str, color: QColor) -> None:
-        painter.setFont(QFont("Microsoft YaHei UI", 10))
-        painter.setPen(color)
-        painter.drawText(self.rect().adjusted(36, 36, -36, -36), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, text)
 
 
 class TopologyTree(QTreeWidget):
@@ -249,12 +64,18 @@ class TopologyEditor(QWidget):
         self.tree.reordered.connect(self._model_changed)
         self.tree.setToolTip("可拖拽调整同组组件的先后顺序；连接方式通过包装按钮修改")
         self.tree.setHeaderLabels(["组件", "材料赋值", "长度权重"])
-        self.tree.setColumnWidth(0, 230)
+        self.tree.setObjectName("topologyTree")
+        self.tree.setMinimumHeight(64)
+        self.tree.setIndentation(18)
+        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.tree.setAlternatingRowColors(True)
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
         self.tree.currentItemChanged.connect(self._selection_changed)
 
         add_material = QPushButton("添加单元")
+        add_material.setObjectName("primaryButton")
         wrap_series = QPushButton("串联")
         wrap_parallel = QPushButton("并联")
         wrap_series.setToolTip("将所选组件包成串联组")
@@ -272,58 +93,131 @@ class TopologyEditor(QWidget):
         move_down.clicked.connect(lambda: self.move_selected(1))
 
         toolbar = QHBoxLayout()
-        for button in (add_material, wrap_series, wrap_parallel, duplicate, remove, move_up, move_down):
+        toolbar.setSpacing(6)
+        for button in (add_material, wrap_series, wrap_parallel):
             toolbar.addWidget(button)
         toolbar.addStretch(1)
 
         self.name_edit = QLineEdit()
         self.material_combo = QComboBox()
         self.material_combo.addItem("未赋值", None)
-        self.area_spin = QDoubleSpinBox()
+        self.area_spin = CompactDoubleSpinBox()
         self.area_spin.setDecimals(6)
         self.area_spin.setRange(0.0, 1.0e12)
-        self.area_spin.setSpecialValueText("使用项目默认值")
-        self.weight_spin = QDoubleSpinBox()
+        self.area_spin.setSpecialValueText("默认面积")
+        self.area_spin.setToolTip("设为 0 时使用项目默认面积")
+        self.weight_spin = CompactDoubleSpinBox()
         self.weight_spin.setDecimals(4)
         self.weight_spin.setRange(0.0001, 1.0e6)
         self.weight_spin.setValue(1.0)
         self.kind_label = QLabel("-")
+        self.kind_label.setObjectName("typeBadge")
         self.name_edit.editingFinished.connect(self._properties_changed)
         self.material_combo.currentIndexChanged.connect(self._properties_changed)
         self.area_spin.valueChanged.connect(self._properties_changed)
         self.weight_spin.valueChanged.connect(self._properties_changed)
 
-        properties = QWidget()
-        form = QFormLayout(properties)
-        form.setContentsMargins(0, 8, 0, 0)
+        properties = QFrame()
+        properties.setObjectName("surfaceCard")
+        properties.setMinimumWidth(200)
+        properties_layout = QVBoxLayout(properties)
+        properties_layout.setContentsMargins(12, 12, 12, 12)
+        properties_layout.setSpacing(8)
+        property_title = QLabel("组件属性")
+        property_title.setObjectName("sectionTitle")
+        properties_layout.addWidget(property_title)
+        form = QFormLayout()
+        form.setVerticalSpacing(6)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+        form.setHorizontalSpacing(8)
+        for field in (self.name_edit, self.material_combo, self.area_spin, self.weight_spin):
+            field.setObjectName("compactField")
+            field.setMinimumWidth(60)
+            field.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         form.addRow("类型", self.kind_label)
         form.addRow("名称", self.name_edit)
         form.addRow("材料赋值", self.material_combo)
         form.addRow("单元面积", self.area_spin)
         form.addRow("长度权重", self.weight_spin)
+        properties_layout.addLayout(form)
+        properties_layout.addStretch(1)
 
-        left = QWidget()
+        left = QFrame()
+        left.setObjectName("surfaceCard")
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setContentsMargins(12, 12, 12, 12)
+        left_layout.setSpacing(8)
+        tree_title = QLabel("装配组件")
+        tree_title.setObjectName("sectionTitle")
+        left_layout.addWidget(tree_title)
         left_layout.addLayout(toolbar)
         left_layout.addWidget(self.tree, 1)
-        left_layout.addWidget(properties)
+        edit_tools = QHBoxLayout()
+        edit_tools.setSpacing(6)
+        for button in (duplicate, move_up, move_down, remove):
+            button.setObjectName("compactButton" if button is not remove else "dangerButton")
+            edit_tools.addWidget(button)
+        edit_tools.addStretch(1)
+        left_layout.addLayout(edit_tools)
 
         self.preview = TopologyPreview()
-        self.preview.setMaximumHeight(180)
-        preview_panel = QWidget()
+        preview_panel = QFrame()
+        preview_panel.setObjectName("surfaceCard")
         preview_layout = QVBoxLayout(preview_panel)
-        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setContentsMargins(14, 14, 14, 10)
+        preview_layout.setSpacing(10)
+        preview_header = QHBoxLayout()
         title = QLabel("节点与单元预览")
         title.setObjectName("sectionTitle")
-        preview_layout.addWidget(title)
+        title.setToolTip("拓扑示意：仅表示连接关系，不按单元长度权重比例绘制")
+        preview_header.addWidget(title)
+        preview_header.addStretch(1)
+        self.zoom_label = QLabel("100%")
+        self.zoom_label.setObjectName("mutedLabel")
+        preview_header.addWidget(self.zoom_label)
+        for text, tip, action in (
+            ("−", "缩小", lambda: self.preview.zoom_by(1 / 1.2)),
+            ("+", "放大", lambda: self.preview.zoom_by(1.2)),
+            ("适配全图", "显示完整拓扑（也可双击画布）", self.preview.fit_to_view),
+        ):
+            button = QToolButton()
+            button.setText(text)
+            button.setObjectName("canvasTool")
+            button.setToolTip(tip)
+            button.clicked.connect(action)
+            preview_header.addWidget(button)
+        self.preview.view_changed.connect(lambda value: self.zoom_label.setText(f"{value}%"))
+        preview_layout.addLayout(preview_header)
         preview_layout.addWidget(self.preview, 1)
+        preview_footer = QHBoxLayout()
+        self.preview_summary = QLabel()
+        self.preview_summary.setObjectName("mutedLabel")
+        self.preview.summary_changed.connect(self.preview_summary.setText)
+        preview_footer.addWidget(self.preview_summary, 1)
+        hint = QLabel("滚轮缩放 · 左键拖动")
+        hint.setObjectName("mutedLabel")
+        preview_footer.addWidget(hint)
+        preview_layout.addLayout(preview_footer)
+
+        editor_splitter = QSplitter(Qt.Orientation.Horizontal)
+        editor_splitter.setChildrenCollapsible(False)
+        editor_splitter.setHandleWidth(8)
+        editor_splitter.addWidget(left)
+        editor_splitter.addWidget(properties)
+        editor_splitter.setSizes([360, 210])
+        editor_splitter.setStretchFactor(0, 1)
+        editor_splitter.setStretchFactor(1, 0)
+        vertical_splitter = QSplitter(Qt.Orientation.Vertical)
+        vertical_splitter.setChildrenCollapsible(False)
+        vertical_splitter.setHandleWidth(10)
+        vertical_splitter.addWidget(preview_panel)
+        vertical_splitter.addWidget(editor_splitter)
+        vertical_splitter.setSizes([410, 270])
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        layout.addWidget(preview_panel)
-        layout.addWidget(left, 1)
+        layout.addWidget(vertical_splitter, 1)
         self.set_root(TopologyNode.material(1, name="E01"))
 
     def set_modeling(self, modeling: ModelingConfig, test_material_tag: int) -> None:

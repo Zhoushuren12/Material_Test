@@ -2,17 +2,60 @@
 
 Python-first OpenSees material testing and material-parameter fitting tool.
 
+## Source Distribution
+
+GitHub contains the application source, built-in material resources, YAML examples,
+tests and dependency configuration. Install dependencies with `python -m pip install -e .`
+and start the desktop application with `python -m material_test.app`.
+
+Install the OpenSees executable and its Tcl runtime separately, then choose their paths
+in the application. The local `OS_terminal/` installation and DLL files are not tracked.
+The default example paths assume a local solver at `OS_terminal/OpenSees.exe`;
+configure another location when using your own installation.
+
+## 支撑显式装配（2026-10-09）
+
+保留单一材料测试流程，不另设“二维组件”模式。**支撑装配**左侧为节点与单元画布，
+右侧集中显示装配组件、单元属性、材料赋予、节点支承及位移控制加载。
+
+- **可拖拽分割面板（Resizable Split Panels / Splitter）**：材料页的命令列表与下方参数/曲线区之间可上下拖动，
+  参数说明与曲线之间可左右拖动；装配页的画布与右侧面板之间可左右拖动，右侧装配组件、
+  单元/节点属性、位移控制加载之间可上下拖动。拖动浅绿色分隔条调整各区宽度或高度；
+  属性与加载区缩小时可在区内滚动，标题与底部计算按钮保持可见。
+
+- 选择 OpenSees 单元类型 `twoNodeLink`、`zeroLength`、`truss`、`corotTruss` 或 `elasticBeamColumn`，点击两端或拖动绘制。
+- 节点自动吸附已有端点和网格；选择节点或单元后可拖动、框选、复制、删除、撤销和重做。
+- 勾选画布下方的 **展开连接节点**，示意分开重合节点和零长度连接，便于选择和查看。
+  展开仅影响显示，实际坐标、自由度及计算结果不变；点击、框选和绘制单元按展开位置识别原节点。
+- 右侧设置真实 X/Y 坐标、端点连接、材料 Tag、截面和局部轴。杆使用应力–应变材料与 A；
+  连接/弹簧平动使用力–变形材料，转动使用力矩–转角材料，不隐式乘面积或长度。
+- 选中节点后指定 UX/UY/RZ 固定约束；用加载节点旁的按钮将其设为控制点，选择全局 X、Y 或 RZ。
+- **计算滞回曲线**使用当前项目的同一加载历程，弹出独立曲线窗口，可取消和导出。
+  装配页无常驻滞回图。坐标、连接关系和方向直接参与 OpenSees 求解，错误约束不自动补刚度。
+- 计算完成后，点击装配页或曲线窗口的 **阻尼器变形图**，按原始加载顺序查看和播放节点变形。
+  可调整变形倍率、叠加未变形轮廓、检查各节点 UX/UY/RZ，并导出当前帧 PNG；瞬态结果显示实际采样时间。
+  图中单元按变形后端点连线显示，转动用节点方向标记表示，不表示构件内部曲率；零长度节点不人为展开。
+  变形图使用求解时的几何与完整节点位移记录，编辑输入后失效，切换项目后清空。
+- 材料、加载、拟合及 Ctrl+S 保存仍在同一项目中。原有轴向串并联 YAML 可继续打开和复算；
+  首次显式编辑后保存为 `modeling.assembly` 图。未赋材料或未指定加载点的草稿也可保存。
+- 旧组件 YAML 导入此装配页，有序加载采样保持重复点及精度。专用图像/多通道拟合仍属于
+  [组件命令行工具](COMPONENTS2D.md)，包含这类拟合配置的项目明确拒绝导入。
+
+任意显式装配暂不能发布为固定轴向 `.oasbrace` 本构包；可保存可复算 YAML、计算、导出和标定。
+
 ## 当前工作流（2026-09-27）
 
 **项目与单位 → 试验与加载 → 材料 → 支撑装配 → 对比与标定（手动 / 自动）→ 发布**
 
 - **无试验**：可输入已有参数、计算滞回、设置基准、导出和发布受支持的可执行本构；RMSE 显示不适用，自动拟合禁用。
 - **有试验**：支持位移、力的有符号换算系数；新导入试验默认采用试验位移加载。只有顺序一致的位移历程才计算误差，不按滞回横坐标插值；求解器补入的初始零点在误差对齐时去除。
-- **全局加载**：幅值序列、外部文件、试验位移三选一，材料预览、装配预览和正式计算共用。旧项目未声明来源时，保留其原来的文件/幅值选择。
+- **全局加载**：幅值序列、外部文件、试验位移和有序采样值选一，正式装配计算与标定共用。有序采样值不重新插值，保留重复点；旧项目未声明来源时保留原来的文件/幅值选择。
 - **单位与模式**：先声明 N/kN/MN 和 mm/cm/m。新项目默认力–变形直接输入（A=L=1）；直接输入使用轴向 twoNodeLink，串联单元不会被长度权重再次缩放。旧项目保持应力–应变模式，使用 Truss 和面积、长度换算。切换单位只声明输入含义，不自动修改已有参数。
 - **参数与拟合**：两处同步编辑，可启用自动重算。拟合边界按当前值的 0.5～2 倍排序后预填，并限制在材料允许区间；零值使用允许范围内的初始区间，需用户核对。拟合支持进度、取消、应用前对比、放弃与撤销；应用后自动完整复算。
 - **保存与状态**：Ctrl+S 保存当前路径，Ctrl+Shift+S 另存为；未保存显示星号，关闭及打开另一项目有保存保护。替换材料列出将解除赋值的单元并确认。过期计算显示灰色虚线和黄色重算入口，不能作为基准、导出或发布。
+- **启动恢复**：记住最后成功打开或保存的项目，下次启动自动打开，打开对话框默认进入上次文件所在目录。文件失效时返回空白项目并在日志中说明；恢复的是磁盘上的文件，未保存修改仍按原来的保存提示处理。
 - **图表**：GUI 统一用 PyQtGraph，中文坐标轴带单位；试验黑色、基准灰色虚线、当前蓝色。空图显示说明。单材及装配预览可叠加试验数据。PNG/PDF/SVG 导出保持 300 dpi 和论文图刻度，图例置于绘图区外。
+- **装配画布**：滚轮缩放，选择模式拖动节点/单元，中键或平移工具移动视图；适配按钮恢复完整模型。共端点的并联单元仅在显示上错开，不改变真实坐标。零长度单元保持独立的重合节点与自由度。画布和右侧面板可拖动分隔条调整大小。
 - **加载模板**：等幅、逐级递增以及可增删转折点的表格编辑。特定规范协议应按明确的规范版本录入或导入；通用循环模板不冒称规范协议。
 - **后台任务**：拟合与正式计算可取消；关闭运行中的项目会先取消任务再完成保存确认。材料库按需后台预览并缓存。所有页面共用可展开日志。
 
@@ -236,8 +279,8 @@ response it primarily controls.
 Library previews are generated lazily in background jobs by the configured
 OpenSees executable and cached by solver, command and geometry. The detail pane shows a larger standard-cycle response.
 After selecting a material, the material page calculates its individual response.
-The Brace Assembly page calculates the complete connected model using a standard
-cycle or the project's current loading protocol.
+The Brace Assembly page calculates the complete connected model using the
+project's current loading protocol and opens the response in a separate dialog.
 
 The library is deliberately local rather than downloaded at runtime: projects
 remain reproducible if the website changes or the computer is offline. Library

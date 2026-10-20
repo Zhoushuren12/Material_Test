@@ -180,6 +180,57 @@ class WorkflowUiTests(unittest.TestCase):
         with patch('material_test.ui.project_session.QMessageBox.question', return_value=QMessageBox.StandardButton.Cancel), patch('material_test.ui.project_session.QFileDialog.getOpenFileName') as picker:
             self.w.load_project(); picker.assert_not_called()
 
+    def test_main_open_routes_planar_model_into_analysis_workflow(self):
+        from material_test.components2d.model import save_component
+        from material_test.components2d.templates import make_plate_joint
+        project = make_plate_joint(self.tmp.name, ROOT / 'OS_terminal' / 'OpenSees.exe', specimen=True)
+        path = Path(self.tmp.name) / 'joint.yaml'
+        save_component(project, path)
+        self.w._project_dirty = False
+        with patch('material_test.ui.project_session.QFileDialog.getOpenFileName', return_value=(str(path), 'YAML')), \
+             patch('material_test.ui.project_session.load_project_config') as legacy_loader, \
+             patch('material_test.ui.project_session.QMessageBox.critical') as error, \
+             patch('material_test.ui.main_window.QFileDialog.getExistingDirectory') as directory:
+            self.w.load_project()
+            legacy_loader.assert_not_called()
+            directory.assert_not_called()
+            error.assert_not_called()
+        self.w.show()
+        self.app.processEvents()
+        graph = self.w.topology_editor.graph
+        self.assertEqual(len(graph['nodes']),9)
+        self.assertEqual(len(graph['elements']),6)
+        self.assertEqual(self.w.pages.currentIndex(),3)
+        self.assertFalse(hasattr(self.w,'component_workbench'))
+        self.assertIsNone(self.w.current_project_path)
+        self.assertTrue(self.w._project_dirty)
+        np.testing.assert_array_equal(history_from_protocol(self.w._loading_protocol_from_ui()),
+                                      history_from_protocol(self.w._config_from_ui().loading))
+
+    def test_main_open_still_loads_material_project(self):
+        path = Path(self.tmp.name) / 'material.yaml'
+        save_project_config(elastic_config(self.tmp.name), path)
+        self.w._project_dirty = False
+        with patch('material_test.ui.project_session.QFileDialog.getOpenFileName', return_value=(str(path), 'YAML')), \
+             patch('material_test.ui.project_session.QMessageBox.critical') as error, \
+             patch.object(self.w, 'import_component_project') as component:
+            self.w.load_project()
+            error.assert_not_called()
+            component.assert_not_called()
+        self.assertEqual(self.w.current_project_path, path.resolve())
+        self.assertEqual(self.w._material_from_ui().parameter_values['k'], 120.)
+
+    def test_invalid_planar_model_reports_its_validation_error(self):
+        path = Path(self.tmp.name) / 'invalid_joint.yaml'
+        path.write_text('schema: material-test/component-2d/v1\nunits: {force: kN, length: mm}\nnodes: []\n', encoding='utf-8')
+        self.w._project_dirty = False
+        with patch('material_test.ui.project_session.QFileDialog.getOpenFileName', return_value=(str(path), 'YAML')), \
+             patch('material_test.ui.project_session.QMessageBox.critical') as error:
+            self.w.load_project()
+        error.assert_called_once()
+        self.assertIn('At least two nodes', error.call_args.args[2])
+        self.assertNotIn('material_template', error.call_args.args[2])
+
     def test_replacement_confirmation_lists_lost_assignments(self):
         replacement=load_material_library().get('elastic').instantiate(tag=2)
         with patch('material_test.ui.project_session.QMessageBox.question', return_value=QMessageBox.StandardButton.Cancel) as question:
@@ -192,6 +243,16 @@ class WorkflowUiTests(unittest.TestCase):
         self.assertEqual(self.w.comparison_parameter_table.cellWidget(0,2).value(),456)
         self.assertIn('456',self.w.material_command_table.item(0,2).text())
         self.assertNotIn('{',self.w.material_command_table.item(0,2).text())
+
+    def test_replacing_material_does_not_commit_previous_parameter_widgets(self):
+        previous = MaterialTemplate('previous', 'uniaxialMaterial Elastic 1 {shared}',
+            parameters=[ParameterSpec('shared', 100., min=0., max=200.)])
+        replacement = MaterialTemplate('replacement', 'uniaxialMaterial Elastic 1 {shared}',
+            parameters=[ParameterSpec('shared', 5., min=0., max=10.)])
+        self.w._populate_material(previous)
+        self.w._populate_material(replacement)
+        self.assertEqual(self.w._material_from_ui().parameter_values['shared'], 5.)
+        self.assertEqual(self.w.param_table.cellWidget(0,2).value(), 5.)
 
     def test_auto_run_debounces_parameter_changes(self):
         with patch.object(self.w,'start_run') as run:

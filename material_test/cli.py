@@ -12,6 +12,13 @@ from material_test.workflow import run_project
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="OpenSees material testing utility.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    planar = subparsers.add_parser("component-run", help="Run a general planar damper assembly.")
+    planar.add_argument("config", type=Path)
+    planar.add_argument("--fit", action="store_true", help="Fit declared response observations.")
+    gui = subparsers.add_parser("component-gui", help="Open the planar component workbench.")
+    gui.add_argument("config", type=Path, nargs="?")
+    gui.add_argument("--workspace", type=Path, default=Path.cwd())
+    gui.add_argument("--solver", type=Path, default=Path(__file__).resolve().parents[1] / "OS_terminal" / "OpenSees.exe")
     component=subparsers.add_parser('component-test',help='Test an .oasbrace with the shared structural component kernel.')
     component.add_argument('package',type=Path)
     component.add_argument('--path',default='0,5,-5,0,10,-10,0',help='Ordered displacement turning points, mm')
@@ -32,6 +39,27 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "component-gui":
+        from PySide6.QtWidgets import QApplication
+        from material_test.ui.main_window import MainWindow
+        app = QApplication.instance() or QApplication([])
+        window = MainWindow(restore_last_project=False)
+        window.solver_path_edit.setText(str(args.solver))
+        window._project_dirty = False
+        if args.config:
+            window.import_component_project(args.config)
+        else:
+            window._navigate_to(3)
+        window.show()
+        return int(app.exec())
+    if args.command == "component-run":
+        from material_test.components2d.model import load_component
+        from material_test.components2d.solver import run_component
+        from material_test.components2d.fitting import fit_component
+        project = load_component(args.config)
+        result = fit_component(project) if args.fit else run_component(project)
+        print(result.fit_dir if args.fit else result.run_dir)
+        return 0
     if args.command=='component-test':
         import json
         from dataclasses import asdict

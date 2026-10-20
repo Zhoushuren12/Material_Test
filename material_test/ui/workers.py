@@ -11,6 +11,35 @@ from material_test.workflow import WorkflowResult, run_project
 from material_test.cancellation import AnalysisCancelled
 
 
+class WorkerCallbacks(QObject):
+    """Give queued callbacks a concrete GUI-thread QObject receiver."""
+    def __init__(self, window, finished_callback):
+        super().__init__(window)
+        self.window = window
+        self.finished_callback = finished_callback
+
+    @Slot(object)
+    def finished(self,result):
+        self.finished_callback(result)
+
+    @Slot(str)
+    def failed(self,message):
+        self.window._run_failed(message)
+
+    @Slot()
+    def cancelled(self):
+        self.window._run_cancelled()
+
+    @Slot(int,int,float)
+    def progress(self,count,total,best):
+        self.window._fit_progress_changed(count,total,best)
+
+    @Slot()
+    def thread_finished(self):
+        self.window._thread_finished()
+        self.deleteLater()
+
+
 class RunWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)

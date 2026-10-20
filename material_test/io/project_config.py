@@ -9,6 +9,14 @@ from material_test.domain import FitConfig, LoadingProtocol, ModelingConfig, Pro
 from material_test.io.material_templates import load_material_template, material_template_from_mapping
 
 
+def project_kind(path: str | Path) -> str:
+    path = Path(path).resolve()
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"project config must be a mapping: {path}")
+    return "component-2d" if data.get("schema") == "material-test/component-2d/v1" else "material"
+
+
 def load_project_config(path: str | Path) -> ProjectConfig:
     path = Path(path).resolve()
     base_dir = path.parent

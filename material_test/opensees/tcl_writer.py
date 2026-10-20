@@ -26,6 +26,11 @@ def write_material_test_tcl(
     tcl_file.parent.mkdir(parents=True, exist_ok=True)
     history_tcl = history_file.as_posix()
     response_tcl = response_file.as_posix()
+    if not str(tcl_file.parent).isascii():
+        if history_file.parent.resolve() == tcl_file.parent.resolve():
+            history_tcl = history_file.name
+        if response_file.parent.resolve() == tcl_file.parent.resolve():
+            response_tcl = response_file.name
     model_commands, controlled_node, force_expression = _explicit_model_commands(
         topology=topology,
         material_tags=material_tags,
@@ -108,7 +113,7 @@ def _explicit_model_commands(
     for element in compiled.elements:
         if material_mode == "force_deformation":
             lines.append(f"element twoNodeLink {element.tag} {element.node_i} {element.node_j} "
-                         f"-mat {element.material_tag} -dir 1 -orient 1 0 0")
+                         f"-mat {element.material_tag} -dir 1 -orient 1 0 0 0 1 0")
         else:
             lines.append(f"element Truss {element.tag} {element.node_i} {element.node_j} "
                          f"{element.area:.12g} {element.material_tag}")

@@ -20,6 +20,7 @@ class OverlayPlotWidget(QWidget):
         self._series_labels = []
         self._current_curve = None
         self.plot_widget = pg.PlotWidget()
+        self.plot_widget.getViewBox().setMouseMode(pg.ViewBox.PanMode)
         self.plot_widget.setBackground('white')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.12)
         self.plot_widget.setMenuEnabled(True)
@@ -39,7 +40,9 @@ class OverlayPlotWidget(QWidget):
         toolbar.addWidget(self.caption, 1)
         reset = QToolButton()
         reset.setText('适配曲线')
-        reset.clicked.connect(self.plot_widget.enableAutoRange)
+        reset.setObjectName('canvasTool')
+        reset.setToolTip('恢复完整曲线；滚轮缩放，按住左键平移')
+        reset.clicked.connect(lambda: self.plot_widget.enableAutoRange())
         toolbar.addWidget(reset)
         layout.addLayout(toolbar)
         layout.addWidget(self.message_label, 1)
@@ -49,8 +52,8 @@ class OverlayPlotWidget(QWidget):
 
     def set_units(self, force, length):
         self.force_unit, self.length_unit = force, length
-        self.plot_widget.setLabel('bottom', f'位移 [{length}]')
-        self.plot_widget.setLabel('left', f'力 [{force}]')
+        self.plot_widget.setLabel('bottom', f'{"转角" if length=="rad" else "位移"} [{length}]')
+        self.plot_widget.setLabel('left', f'{"力矩" if length=="rad" else "力"} [{force}]')
 
     def clear(self, message='暂无计算曲线，请设置材料和加载后计算。'):
         self.plot_widget.clear()
@@ -124,8 +127,8 @@ class StagePlotWidget(OverlayPlotWidget):
     def update_series(self, series, *, title, x_label, y_label, zero_axes=False):
         self._begin()
         self.caption.setText(title)
-        self.plot_widget.setLabel('bottom', f'{x_label} [{self.length_unit}]' if x_label == '位移' else x_label)
-        self.plot_widget.setLabel('left', f'{y_label} [{self.force_unit}]' if y_label == '力' else y_label)
+        self.plot_widget.setLabel('bottom', f'{"转角" if self.length_unit=="rad" else x_label} [{self.length_unit}]' if x_label == '位移' else x_label)
+        self.plot_widget.setLabel('left', f'{"力矩" if self.length_unit=="rad" else y_label} [{self.force_unit}]' if y_label == '力' else y_label)
         for x, y, label, color in series:
             if len(x):
                 item = self._add_curve(x, y, label, pg.mkPen('#111827' if '试验' in label else color, width=1.8))

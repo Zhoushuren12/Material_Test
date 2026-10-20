@@ -35,4 +35,4 @@ pythonpath = ["."]
 include = ["material_test*"]
 
 [tool.setuptools.package-data]
-material_test = ["resources/*.yaml"]
+material_test = ["resources/*.yaml", "resources/icons/*.svg", "resources/icons/LICENSE"]

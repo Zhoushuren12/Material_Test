@@ -4,11 +4,11 @@ import copy
 import json
 from pathlib import Path
 import numpy as np
-from PySide6.QtCore import Qt, QThread, QTimer
+from PySide6.QtCore import Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QTableWidget, QTableWidgetItem, QDialogButtonBox, QMessageBox, QFileDialog
 from material_test.domain import FitParameterSpec
-from material_test.ui.workers import RunWorker, FitWorker
+from material_test.ui.workers import RunWorker, FitWorker, WorkerCallbacks
 from material_test.material_preview import preview_error_summary
 from material_test.workflow import WorkflowResult
 from material_test.brace_export import build_brace_package
@@ -85,9 +85,9 @@ class FittingWorkflowMixin:
         self._set_running(True, '参数拟合中…')
         self._thread = QThread(self)
         self._worker = FitWorker(copy.deepcopy(config))
-        self._worker.progress.connect(self._fit_progress_changed)
         self._start_worker(self._worker, self._fit_finished)
 
+    @Slot(int,int,float)
     def _fit_progress_changed(self, count, total, best):
         self.fit_progress.setRange(0, total)
         self.fit_progress.setValue(count)
@@ -109,17 +109,20 @@ class FittingWorkflowMixin:
 
     def _start_worker(self, worker, finished_callback):
         worker.moveToThread(self._thread)
+        self._worker_callbacks = WorkerCallbacks(self,finished_callback)
         self._thread.started.connect(worker.run)
-        worker.finished.connect(finished_callback)
-        worker.failed.connect(self._run_failed)
-        worker.cancelled.connect(self._run_cancelled)
+        worker.finished.connect(self._worker_callbacks.finished, Qt.ConnectionType.QueuedConnection)
+        worker.failed.connect(self._worker_callbacks.failed, Qt.ConnectionType.QueuedConnection)
+        worker.cancelled.connect(self._worker_callbacks.cancelled, Qt.ConnectionType.QueuedConnection)
+        if isinstance(worker,FitWorker):
+            worker.progress.connect(self._worker_callbacks.progress, Qt.ConnectionType.QueuedConnection)
         for signal in (worker.finished, worker.failed, worker.cancelled):
             signal.connect(self._thread.quit)
             signal.connect(worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._thread_finished)
+        self._thread.finished.connect(self._worker_callbacks.thread_finished, Qt.ConnectionType.QueuedConnection)
         self._thread.start()
 
+    @Slot(object)
     def _fit_finished(self, result):
         if self._run_generation != self._generation:
             self._append_log('拟合期间输入发生变化，保留原参数；请重新拟合。')
@@ -199,7 +202,10 @@ class FittingWorkflowMixin:
         self.log_dock.show()
         QMessageBox.critical(self, '运行失败', preview_error_summary(RuntimeError(message)) + '\n完整异常见底部运行日志。')
 
+    @Slot()
     def _thread_finished(self):
+        self._thread.wait()
+        self._thread.deleteLater()
         self._thread = None
         self._worker = None
         self._set_running(False, self.run_state_label.text())
@@ -214,6 +220,12 @@ class FittingWorkflowMixin:
             self._auto_timer.start()
 
     def _set_running(self, running, text):
+        self.topology_editor.setEnabled(not running)
+        self.calculate_model_preview_button.setEnabled(not running)
+        self.open_button.setEnabled(not running)
+        self.save_button.setEnabled(not running)
+        self.save_project_action.setEnabled(not running)
+        self.save_as_action.setEnabled(not running)
         self.run_button.setEnabled(not running)
         self.cancel_button.setEnabled(running)
         self.fit_cancel_button.setEnabled(running)
@@ -222,6 +234,8 @@ class FittingWorkflowMixin:
         ready = not running and isinstance(self.current_result, WorkflowResult) and not self._comparison_dirty
         for button in (self.publish_button, self.set_baseline_button, self.export_button):
             button.setEnabled(ready)
+        if self.topology_editor._legacy is None:
+            self.publish_button.setEnabled(False)
         self.clear_baseline_button.setEnabled(not running and self.baseline_result is not None)
         if running:
             self.fit_page_button.setEnabled(False)

@@ -5,3 +5,20 @@ __pycache__/
 .omx/
 *.egg-info/
 outputs/
+
+# Local solver installation and packaged binaries are not source files.
+OS_terminal/
+*.exe
+*.dll
+*.pyd
+*.so
+build/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+*.pem
+*.key
+*.pfx
+*.p12

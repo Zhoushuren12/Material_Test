@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import string
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from material_test.deformation import DeformationHistory
 
 
 def _to_path(value: str | Path | None) -> Path | None:
@@ -176,6 +180,7 @@ class LoadingProtocol:
     append_zero: bool = False
     source: str = "auto"
     history_scale: float = 1.0
+    samples: list[float] = field(default_factory=list)
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any], *, base_dir: Path | None = None) -> "LoadingProtocol":
@@ -194,6 +199,7 @@ class LoadingProtocol:
             append_zero=bool(data.get("append_zero", history.get("append_zero", False))),
             source=str(data.get("source", "external" if history.get("path") else "amplitudes")),
             history_scale=float(history.get("scale", 1.0)),
+            samples=[float(value) for value in data.get("samples", [])],
         )
 
     def to_mapping(self) -> dict[str, Any]:
@@ -209,6 +215,8 @@ class LoadingProtocol:
             }
         elif self.append_zero:
             data["append_zero"] = self.append_zero
+        if self.samples:
+            data['samples'] = list(self.samples)
         return data
 
 
@@ -241,6 +249,7 @@ class SimulationResult:
     stdout: str = ""
     stderr: str = ""
     returncode: int = 0
+    deformation: DeformationHistory | None = None
 
     def __post_init__(self) -> None:
         self.displacement = np.asarray(self.displacement, dtype=float).ravel()
@@ -293,6 +302,7 @@ class FitConfig:
     population_size: int = 16
     local_refine: bool = True
     local_max_evaluations: int = 120
+    local_diff_step: float = 1.0e-4
     loss: str = "soft_l1"
     f_scale: float = 1.0
     seed: int | None = None
@@ -309,6 +319,7 @@ class FitConfig:
             population_size=int(data.get("population_size", 16)),
             local_refine=bool(data.get("local_refine", True)),
             local_max_evaluations=int(data.get("local_max_evaluations", 120)),
+            local_diff_step=float(data.get("local_diff_step", 1.0e-4)),
             loss=str(data.get("loss", "soft_l1")),
             f_scale=float(data.get("f_scale", 1.0)),
             seed=int(data["seed"]) if data.get("seed") is not None else None,
@@ -330,6 +341,8 @@ class FitConfig:
             raise ValueError("fitting.population_size must be at least 2")
         if self.local_max_evaluations < 1:
             raise ValueError("fitting.local_max_evaluations must be positive")
+        if not np.isfinite(self.local_diff_step) or self.local_diff_step <= 0:
+            raise ValueError("fitting.local_diff_step must be finite and positive")
         if self.loss not in {"linear", "soft_l1", "huber", "cauchy", "arctan"}:
             raise ValueError("fitting.loss is not supported by scipy.optimize.least_squares")
         if self.f_scale <= 0:
@@ -345,6 +358,7 @@ class FitConfig:
             "population_size": self.population_size,
             "local_refine": self.local_refine,
             "local_max_evaluations": self.local_max_evaluations,
+            "local_diff_step": self.local_diff_step,
             "loss": self.loss,
             "f_scale": self.f_scale,
             "seed": self.seed,
@@ -485,6 +499,7 @@ class ModelingConfig:
     topology: str = "single"
     material_tags: list[int] = field(default_factory=list)
     root: TopologyNode | None = None
+    assembly: dict | None = None
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> "ModelingConfig":
@@ -494,11 +509,16 @@ class ModelingConfig:
             topology=str(data.get("topology", "nested" if root_data else "single")).lower(),
             material_tags=[int(tag) for tag in data.get("material_tags", [])],
             root=TopologyNode.from_mapping(root_data) if root_data is not None else None,
+            assembly=deepcopy(data.get("assembly")),
         )
         config.validate(require_assigned=False)
         return config
 
     def validate(self, *, require_assigned: bool = True) -> None:
+        if self.assembly is not None:
+            from material_test.explicit_assembly import validate_assembly
+            validate_assembly(self.assembly, ready=require_assigned)
+            return
         if self.topology not in {"single", "series", "parallel", "nested"}:
             raise ValueError("modeling.topology must be 'single', 'series', 'parallel', or 'nested'")
         if self.root is not None:
@@ -512,6 +532,8 @@ class ModelingConfig:
             raise ValueError(f"explicit {self.topology} modeling requires at least two material tags")
 
     def to_mapping(self) -> dict[str, Any]:
+        if self.assembly is not None:
+            return {"topology": "explicit", "assembly": deepcopy(self.assembly)}
         if self.root is not None:
             return {
                 "topology": "nested",
@@ -524,6 +546,8 @@ class ModelingConfig:
 
     def resolved_root(self, test_material_tag: int) -> TopologyNode:
         """Return the recursive form while keeping legacy project files readable."""
+        if self.assembly is not None:
+            raise ValueError("显式节点装配不能转换为串并联本构，请使用显式装配求解。")
         if self.root is not None:
             return self.root
         if self.topology == "single":

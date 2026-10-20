@@ -46,6 +46,13 @@ def history_from_protocol(protocol: LoadingProtocol) -> np.ndarray:
     source = protocol.source
     if source == "auto":
         source = "external" if protocol.history_path is not None else "amplitudes"
+    if source == 'samples':
+        history = np.asarray(protocol.samples,dtype=float)
+        if history.ndim!=1 or history.size<2 or not np.isfinite(history).all():
+            raise ValueError('有序采样值至少需要两个有限数值')
+        if protocol.append_zero and history[-1]!=0:
+            history = np.r_[history,0.]
+        return history
     if source not in {"amplitudes", "external", "experiment"}:
         raise ValueError("请选择幅值序列、外部文件或试验位移作为加载来源")
     if source in {"external", "experiment"}:

@@ -102,7 +102,9 @@ class _FittingEvaluator:
                 length=self.config.length,
                 modeling=self.config.modeling,
                 material_mode=self.config.material_mode,
+                force_unit=self.config.force_unit, length_unit=self.config.length_unit,
                 cancel_check=self.cancel_check,
+                record_deformation=False,
             )
             force = _force_at_experiment_steps(simulation, self.experiment)
             residual = (force - self.experiment.force) / self.force_scale
@@ -154,6 +156,7 @@ def fit_project(config: ProjectConfig, *, run_dir: Path | None = None, progress=
                 f_scale=fit_config.f_scale,
                 x_scale="jac",
                 max_nfev=fit_config.local_max_evaluations,
+                diff_step=fit_config.local_diff_step,
             )
             best_x = np.asarray(refined.x, dtype=float)
         except EvaluationBudgetExhausted:
@@ -173,6 +176,7 @@ def fit_project(config: ProjectConfig, *, run_dir: Path | None = None, progress=
         length=config.length,
         modeling=config.modeling,
         material_mode=config.material_mode,
+        force_unit=config.force_unit, length_unit=config.length_unit,
         cancel_check=cancel_check,
     )
     fitted_force = _force_at_experiment_steps(simulation, experiment)
@@ -186,7 +190,9 @@ def fit_project(config: ProjectConfig, *, run_dir: Path | None = None, progress=
         header="displacement,force",
         comments="",
     )
-    figure_file = save_overlay_plot(run_dir / "fit_overlay.png", simulation, experiment, force_unit=config.force_unit, length_unit=config.length_unit)
+    from material_test.explicit_assembly import response_units
+    force_unit,length_unit = response_units(config)
+    figure_file = save_overlay_plot(run_dir / "fit_overlay.png", simulation, experiment, force_unit=force_unit, length_unit=length_unit)
     material_file = run_dir / "fitted_material.yaml"
     material_file.write_text(yaml.safe_dump(fitted_material.to_mapping(), sort_keys=False), encoding="utf-8")
     summary_file = run_dir / "fit_summary.json"
@@ -241,6 +247,7 @@ def _run_global_search(evaluator: _FittingEvaluator) -> np.ndarray:
             seed=evaluator.fit_config.seed,
             updating="immediate",
             workers=1,
+            x0=_initial_vector(evaluator),
         )
         return np.asarray(result.x, dtype=float)
     except EvaluationBudgetExhausted:
@@ -249,12 +256,26 @@ def _run_global_search(evaluator: _FittingEvaluator) -> np.ndarray:
         return evaluator.best_x
 
 
+def _initial_vector(evaluator: _FittingEvaluator) -> np.ndarray:
+    """Use the displayed material values, clipped to the selected fit bounds."""
+    values = evaluator.config.material.parameter_values
+    initial = []
+    for spec in evaluator.parameter_specs:
+        value = float(values[spec.name])
+        if not np.isfinite(value):
+            raise ValueError(f"non-finite initial fitting parameter: {spec.name}")
+        value = float(np.clip(value, spec.min, spec.max))
+        initial.append(np.log(value) if spec.scale == "log" else value)
+    return np.clip(np.asarray(initial, dtype=float), evaluator.lower, evaluator.upper)
+
+
 def _particle_swarm(evaluator: _FittingEvaluator) -> np.ndarray:
     rng = np.random.default_rng(evaluator.fit_config.seed)
     dimensions = len(evaluator.parameter_specs)
     swarm_size = min(evaluator.fit_config.population_size, evaluator.fit_config.max_evaluations)
     lower, upper = evaluator.lower, evaluator.upper
     positions = lower + rng.random((swarm_size, dimensions)) * (upper - lower)
+    positions[0] = _initial_vector(evaluator)
     velocities = np.zeros_like(positions)
     personal_best = positions.copy()
     personal_scores = np.full(swarm_size, np.inf)

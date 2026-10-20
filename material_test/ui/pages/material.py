@@ -24,11 +24,20 @@ def build(self) -> QWidget:
     self.template_path_edit.setReadOnly(True)
     self.template_path_edit.setPlaceholderText("项目内材料，随项目保存")
     template_header.addWidget(self.template_path_edit, 1)
-    library_button = QPushButton("添加材料 ▾"); library_button.setObjectName("primaryButton")
-    menu = QMenu(library_button)
-    menu.addAction("从材料库添加…", self.open_material_library)
+    # Use a split button so the common action is available from the whole
+    # button body while the menu arrow is reserved for importing a YAML
+    # template.  A QPushButton with setMenu() makes the entire button open
+    # the menu, which makes adding a material unnecessarily indirect.
+    self.material_library_button = QToolButton()
+    self.material_library_button.setText("添加材料")
+    self.material_library_button.setObjectName("primaryButton")
+    self.material_library_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+    self.material_library_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+    self.material_library_button.clicked.connect(self.open_material_library)
+    menu = QMenu(self.material_library_button)
     menu.addAction("导入 YAML 模板…", self.browse_material_template)
-    library_button.setMenu(menu); template_header.addWidget(library_button)
+    self.material_library_button.setMenu(menu)
+    template_header.addWidget(self.material_library_button)
     layout.addLayout(template_header)
     identity = QHBoxLayout()
     self.material_name_edit = QLineEdit()
@@ -41,7 +50,11 @@ def build(self) -> QWidget:
     self.material_tag_spin.hide()
     layout.addLayout(identity)
 
-    layout.addWidget(self._section_title("已定义的 OpenSees 材料命令"))
+    command_panel = QWidget()
+    command_layout = QVBoxLayout(command_panel)
+    command_layout.setContentsMargins(0, 0, 0, 0)
+    command_layout.setSpacing(7)
+    command_layout.addWidget(self._section_title("已定义的 OpenSees 材料命令"))
     self.material_command_table = QTableWidget(0, 5)
     self.material_command_table.setHorizontalHeaderLabels(
         ["Tag", "材料类型", "OpenSees 命令", "装配使用", "操作"]
@@ -56,14 +69,14 @@ def build(self) -> QWidget:
     self.material_command_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     self.material_command_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
     self.material_command_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    self.material_command_table.setMinimumHeight(104)
-    self.material_command_table.setMaximumHeight(148)
+    self.material_command_table.setMinimumHeight(80)
     self.material_command_table.currentCellChanged.connect(
         lambda row, column, previous_row, previous_column: self._select_material_command(row)
     )
-    layout.addWidget(self.material_command_table)
+    command_layout.addWidget(self.material_command_table, 1)
 
     detail_splitter = QSplitter(Qt.Orientation.Horizontal)
+    detail_splitter.setObjectName("materialDetailSplitter")
     editor_panel = QWidget()
     editor_layout = QVBoxLayout(editor_panel)
     editor_layout.setContentsMargins(0, 0, 14, 0)
@@ -122,7 +135,17 @@ def build(self) -> QWidget:
     detail_splitter.addWidget(editor_panel)
     detail_splitter.addWidget(preview_panel)
     detail_splitter.setSizes([650, 520])
-    layout.addWidget(detail_splitter, 1)
+    detail_splitter.handle(1).setToolTip("左右拖动，调整参数说明与滞回曲线的宽度")
+
+    self.material_page_splitter = QSplitter(Qt.Orientation.Vertical)
+    self.material_page_splitter.setObjectName("materialPageSplitter")
+    self.material_page_splitter.addWidget(command_panel)
+    self.material_page_splitter.addWidget(detail_splitter)
+    self.material_page_splitter.setStretchFactor(0, 0)
+    self.material_page_splitter.setStretchFactor(1, 1)
+    self.material_page_splitter.setSizes([180, 580])
+    self.material_page_splitter.handle(1).setToolTip("上下拖动，调整材料命令区与参数/曲线区的高度")
+    layout.addWidget(self.material_page_splitter, 1)
     return page
 
 
