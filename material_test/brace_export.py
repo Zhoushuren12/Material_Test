@@ -36,9 +36,7 @@ def input_identity(config):
         result[name+'_sha256']=hashlib.sha256(Path(path).read_bytes()).hexdigest() if path and Path(path).is_file() else None
     return result
 
-def export_constitutive(config):
-    if config.modeling.assembly is not None:
-        raise ValueError('显式节点装配尚不能发布为固定轴向串并联本构；模型可保存、计算和标定。')
+def _material_commands(config):
     commands={}
     for line in config.material.render_command().splitlines():
         tokens=shlex.split(line,comments=True)
@@ -48,19 +46,27 @@ def export_constitutive(config):
         tag=int(tokens[2])
         if tag in commands:raise ValueError('材料 Tag 重复')
         commands[tag]=(tokens[1],tokens[3:])
-    def material(tag,area,length,active=()):
+    return commands
+
+
+def _material_law(commands,tag,area=1.,length=1.,active=()):
         if tag in active or tag not in commands:raise ValueError('材料引用循环或缺少 Tag')
         kind,args=commands[tag];active=(*active,tag)
         if kind in {'Series','Parallel'}:
             if len(args)<2:raise ValueError('串并联材料至少需要两个引用；发布不支持自定义迭代选项')
-            return {'type':kind,'children':[material(int(a),area,length,active) for a in args]}
+            return {'type':kind,'children':[_material_law(commands,int(a),area,length,active) for a in args]}
         if kind=='MinMax':
             if len(args)!=5 or set(args[1::2])!={'-min','-max'}:raise ValueError('MinMax 发布需同时给出 -min 和 -max')
             bounds=dict(zip(args[1::2],args[2::2]))
-            return {'type':kind,'child':material(int(args[0]),area,length,active),
+            return {'type':kind,'child':_material_law(commands,int(args[0]),area,length,active),
                     'parameters':{'min':float(bounds['-min'])*length,'max':float(bounds['-max'])*length}}
         if kind not in FIELDS:raise ValueError(f'当前支撑包尚不支持材料 {kind}，不能用曲线代替其本构')
         fields=FIELDS[kind]
+        if kind=='Steel02':
+            if len(args) not in (6,10,11):
+                raise ValueError(f'Steel02 Tag {tag} 需要6个基本参数，或附带完整 a1/a2/a3/a4（及 sigInit）；当前{len(args)}个')
+            fields=fields+[(name,'ratio') for name in ('a1','a2','a3','a4')][:max(0,len(args)-6)]
+            if len(args)==11:fields=fields+[('sigInit','force')]
         minimum=4 if kind=='SelfCentering' else len(fields)
         if not minimum<=len(args)<=len(fields):raise ValueError(f'{kind} 参数数量无效')
         values=[float(a) for a in args]
@@ -68,6 +74,14 @@ def export_constitutive(config):
         values+= [0.,0.,1.][max(0,len(values)-4):] if kind=='SelfCentering' else []
         factors={'force':area,'stiffness':area/length,'length':length,'ratio':1.}
         return {'type':kind,'parameters':{n:v*factors[d] for (n,d),v in zip(fields,values)}}
+
+
+def export_constitutive(config):
+    if config.modeling.assembly is not None:
+        raise ValueError('显式节点装配请使用工作台构件包发布')
+    commands=_material_commands(config)
+    def material(tag,area,length):
+        return _material_law(commands,tag,area,length)
     def topology(node,length):
         if node.kind=='material':
             if config.material_mode == 'force_deformation':
@@ -80,7 +94,7 @@ def export_constitutive(config):
     if not all(math.isfinite(v) and v>0 for v in (config.area,config.length)):raise ValueError('面积和长度必须为有限正值')
     return topology(root,config.length)
 
-def build_brace_package(config, *, result_dir, version='1', force_unit=None, displacement_unit=None):
+def build_brace_package(config, *, result_dir, version='1', force_unit=None, displacement_unit=None, workbench=False):
     force_unit = force_unit or config.force_unit
     displacement_unit = displacement_unit or config.length_unit
     if force_unit not in {'N','kN','MN'} or displacement_unit not in {'mm','cm','m'}:
@@ -102,10 +116,18 @@ def build_brace_package(config, *, result_dir, version='1', force_unit=None, dis
         curves.append({'id':'experiment','name':'试验数据（已换算）','kind':'experimental',
                        'points':np.c_[experiment.displacement,experiment.force].tolist()})
     curves.append({'id':'simulation','name':'当前参数计算','kind':'numerical','points':simulation[:,:2].tolist()})
-    result={'format':'open-analysis-brace-package','schema_version':2,'id':'component_'+uuid4().hex,
+    planar = workbench or config.modeling.assembly is not None
+    if planar:
+        from material_test.workbench_export import export_workbench_definition, validate_workbench_package
+        if force_unit!=config.force_unit or displacement_unit!=config.length_unit:
+            raise ValueError('工作台构件包必须使用计算时的项目单位，不能仅改写单位标签')
+        constitutive=export_workbench_definition(config)
+    else:
+        constitutive=export_constitutive(config)
+    result={'format':'open-analysis-brace-package','schema_version':3 if planar else 2,'id':'component_'+uuid4().hex,
             'name':config.material.name,'version':str(version),'units':{'force':force_unit,'displacement':displacement_unit},
-            'interfaces':{'type':'two-terminal-axial','ports':['i','j'],'positive':'extension'},
-            'topology':{'type':'axial-brace','element_type':'twoNodeLink'},'constitutive':export_constitutive(config),
+            'interfaces':{'type':'two-terminal-planar' if planar else 'two-terminal-axial','ports':['i','j'],'positive':'extension'},
+            'topology':{'type':'planar-brace' if planar else 'axial-brace','element_type':'Assembly2D' if planar else 'twoNodeLink'},'constitutive':constitutive,
             'parameters':[],'curves':curves,'story_overrides':[],
             'evidence':{'experiment_path':str(config.experiment_path) if config.experiment_path else None,
                         'source_type':'experiment-comparison' if config.experiment_path else 'manual-assumption',
@@ -114,11 +136,16 @@ def build_brace_package(config, *, result_dir, version='1', force_unit=None, dis
                         'input_sha256':manifest['input_sha256'],'input_snapshot':identity,
                         'simulation_sha256':simulation_sha,
                         'run_directory':str(result_dir.resolve()),'exported_at':datetime.now(timezone.utc).isoformat(),
-                        'scope':'Validated loading history; typed axial constitutive graph. No general spatial mechanism equivalence claim.'}}
+                        'scope':'Source loading history; typed collinear component. No general spatial mechanism equivalence claim.'}}
+    if planar:
+        result['editor_definition']={'definition':deepcopy(constitutive),'mode':'explicit',
+                                     'root_material_id':constitutive['materials'][0]['id']}
+        result['evidence']['assembly_boundary']='试算固定端与加载约束仅作来源记录；SA安装端与框架节点连接'
+        validate_workbench_package(result)
     result['content_sha256']=checksum(result)
     return result
 
-def write_brace_package(config, path, *, result_dir, version='1'):
-    result=build_brace_package(config,result_dir=result_dir,version=version)
+def write_brace_package(config, path, *, result_dir, version='1', workbench=False):
+    result=build_brace_package(config,result_dir=result_dir,version=version,workbench=workbench)
     Path(path).write_text(json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
     return result

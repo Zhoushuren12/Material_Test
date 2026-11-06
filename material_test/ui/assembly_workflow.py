@@ -40,6 +40,8 @@ class AssemblyWorkflowMixin:
 
     def _set_running(self, running, text):
         super()._set_running(running, text)
+        self.export_python_action.setEnabled(not running)
+        self.export_python_button.setEnabled(not running)
         if running: self._clear_assembly_deformation('计算中，等待新的变形结果')
         else: self._update_deformation_actions()
 

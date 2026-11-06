@@ -59,7 +59,7 @@ PAGES = [
     ("试验与加载", "试验可选 · 统一加载来源"),
     ("材料", "添加材料、编辑参数与单材预览"),
     ("支撑装配", "节点、单元与材料赋予"),
-    ("对比与标定", "手动调参、自动拟合与发布"),
+    ("对比与标定", "手动调参、自动拟合与曲线对比"),
 ]
 
 
@@ -111,8 +111,13 @@ class MainWindow(AssemblyWorkflowMixin, ProjectSessionMixin, FittingWorkflowMixi
         self.addActions([self.load_project_action, self.save_project_action, self.save_as_action])
         self.publish_brace_action = QAction('发布支撑模型到 Structural analysis…', self)
         self.publish_brace_action.setShortcut('Ctrl+Shift+P')
+        self.publish_brace_action.setEnabled(False)
         self.publish_brace_action.triggered.connect(self.publish_brace)
         self.addAction(self.publish_brace_action)
+        self.export_python_action = QAction('导出 Python 建模文件…', self)
+        self.export_python_action.setShortcut('Ctrl+Shift+E')
+        self.export_python_action.triggered.connect(self.export_python_model)
+        self.addAction(self.export_python_action)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -194,6 +199,11 @@ class MainWindow(AssemblyWorkflowMixin, ProjectSessionMixin, FittingWorkflowMixi
         self.save_button = save_button
         layout.addWidget(open_button)
         layout.addWidget(save_button)
+        self.export_python_button = QPushButton('导出 Python…')
+        self.export_python_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown))
+        self.export_python_button.setToolTip('将当前材料、装配与加载历程保存为可编辑、可复算的 Python 文件（Ctrl+Shift+E）')
+        self.export_python_button.clicked.connect(self.export_python_model)
+        layout.addWidget(self.export_python_button)
         return header
 
     def _build_navigation(self) -> QWidget:
@@ -450,6 +460,7 @@ class MainWindow(AssemblyWorkflowMixin, ProjectSessionMixin, FittingWorkflowMixi
             self.plot_widget.clear()
             self.stale_notice.hide()
             self.publish_button.setEnabled(False)
+            self.publish_brace_action.setEnabled(False)
             self.comparison_metrics_table.setRowCount(0)
             self.set_baseline_button.setEnabled(False)
             self.clear_baseline_button.setEnabled(self.baseline_result is not None)
@@ -475,7 +486,9 @@ class MainWindow(AssemblyWorkflowMixin, ProjectSessionMixin, FittingWorkflowMixi
         self.stale_notice.setVisible(self._comparison_dirty)
         self.set_baseline_button.setEnabled(not self._comparison_dirty)
         self.export_button.setEnabled(not self._comparison_dirty)
-        self.publish_button.setEnabled(not self._comparison_dirty and self._thread is None)
+        publish_ready = isinstance(current, WorkflowResult) and not self._comparison_dirty and self._thread is None
+        self.publish_button.setEnabled(publish_ready)
+        self.publish_brace_action.setEnabled(publish_ready)
         if self._comparison_dirty:
             self._set_status("参数或模型已修改 · 当前曲线待重新计算", "stale")
         elif baseline_simulation is not None:
@@ -904,6 +917,30 @@ class MainWindow(AssemblyWorkflowMixin, ProjectSessionMixin, FittingWorkflowMixi
         if path:
             self.output_dir_edit.setText(path)
 
+
+    def export_python_model(self) -> None:
+        if self._analysis_busy():
+            return
+        try:
+            config = self._config_from_ui()
+            name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', config.material.name).strip(' .') or 'material'
+            directory = self.current_project_path.parent if self.current_project_path else ROOT
+            filename, _ = QFileDialog.getSaveFileName(
+                self, '导出 Python 建模文件', str(directory / f'{name}_model.py'),
+                'Python 建模文件 (*.py)',
+            )
+            if not filename:
+                return
+            from material_test.opensees.python_writer import write_python_model
+            output = Path(filename)
+            if output.suffix.lower() != '.py':
+                output = output.with_suffix('.py')
+            write_python_model(config, output)
+        except Exception as exc:
+            QMessageBox.warning(self, 'Python 模型导出失败', str(exc))
+            return
+        self._append_log(f'已导出 Python 建模文件（使用 OpenSeesPy 复算）：{output}')
+        QMessageBox.information(self, 'Python 模型已导出', f'已保存：{output}\n\n文件包含当前材料、装配和加载历程，可直接编辑并用 OpenSeesPy 运行。\n扩展材料需要支持对应材料的 OpenSeesPy 内核。')
 
     def export_figure(self) -> None:
         if self.current_result is None or self._comparison_dirty:

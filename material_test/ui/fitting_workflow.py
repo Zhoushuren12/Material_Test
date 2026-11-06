@@ -234,8 +234,7 @@ class FittingWorkflowMixin:
         ready = not running and isinstance(self.current_result, WorkflowResult) and not self._comparison_dirty
         for button in (self.publish_button, self.set_baseline_button, self.export_button):
             button.setEnabled(ready)
-        if self.topology_editor._legacy is None:
-            self.publish_button.setEnabled(False)
+        self.publish_brace_action.setEnabled(ready)
         self.clear_baseline_button.setEnabled(not running and self.baseline_result is not None)
         if running:
             self.fit_page_button.setEnabled(False)
@@ -249,12 +248,14 @@ class FittingWorkflowMixin:
             return
         try:
             config = self._comparison_config_from_ui()
-            package = build_brace_package(config, result_dir=self.current_result.run_dir)
-            path, _ = QFileDialog.getSaveFileName(self, '发布支撑模型', str(self.current_result.run_dir / 'support.oasbrace'), '支撑模型包 (*.oasbrace)')
+            package = build_brace_package(config, result_dir=self.current_result.run_dir, workbench=True)
+            path, _ = QFileDialog.getSaveFileName(self, '发布支撑模型到 SA 工作台', str(self.current_result.run_dir / 'support.oasbrace'), 'SA 可编辑构件包 (*.oasbrace)')
             if not path:
                 return
+            if not Path(path).suffix:
+                path += '.oasbrace'
             Path(path).write_text(json.dumps(package, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
             self._append_log(f'已发布支撑包：{path} · {package["evidence"]["description"]}')
-            QMessageBox.information(self, '支撑模型已发布', f'已保存：{path}\n来源：{package["evidence"]["description"]}')
+            QMessageBox.information(self, '支撑模型已发布', f'已保存：{path}\n来源：{package["evidence"]["description"]}\n在 SA“支撑体系 → 导入支撑模型”导入，再进入“材料与构造”编辑。')
         except (ValueError, OSError, KeyError) as exc:
             QMessageBox.warning(self, '无法发布支撑模型', str(exc))

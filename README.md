@@ -45,6 +45,19 @@ configure another location when using your own installation.
 
 ## 当前工作流（2026-09-27）
 
+### 导出 Python 建模文件
+
+在窗口顶部 **保存** 旁点击 **导出 Python…**，或按 **Ctrl+Shift+E**，
+选择 `.py` 文件的保存位置。导出当前界面里的材料参数、节点/单元、约束、质量、
+有序加载历程及求解设置，支持原有轴向串并联模型与显式装配静力/瞬态模型；无需先计算。
+外部文件或试验位移加载会在导出时读取并内嵌，移动 Python 文件后不依赖原始加载文件。
+模型带中文分区注释和准确行号目录，可直接编辑，在安装 OpenSeesPy 的 Python 环境中
+执行 `python 模型文件.py`，结果写入文件旁的同名 `_results/response.csv`。
+建模正文放在前面，完整加载历程在文件末尾按每行最多 10 个值排列，保持采样顺序及精度。
+材料库中支持的数值参数以具名项显示；节点注释列出连接单元及零长度连接两侧，构件注明类型和材料引用。
+静力结果使用 `pseudo_time` 列表示伪时间，瞬态结果的 `time` 列才表示物理时间（秒）。
+TwoStage、SMA 等扩展材料需要支持该材料的 OpenSeesPy 内核；Tcl 脚本表达式需先改为显式参数再导出。
+
 **项目与单位 → 试验与加载 → 材料 → 支撑装配 → 对比与标定（手动 / 自动）→ 发布**
 
 - **无试验**：可输入已有参数、计算滞回、设置基准、导出和发布受支持的可执行本构；RMSE 显示不适用，自动拟合禁用。
@@ -65,7 +78,8 @@ project_session.py，计算、拟合与发布控制位于 fitting_workflow.py。
 
 ## Publish an executable brace
 
-After a complete calculation, use **发布支撑模型…** on **对比与标定** or
+After a complete calculation, use **发布支撑模型到 SA…** at the right of the
+**支撑装配** canvas toolbar or
 **Ctrl+Shift+P**. Units come from **项目与单位**. Save an .oasbrace package
 and import it on Structural analysis's component assembly page. Experimental
 measurements are optional: numerical-only packages explicitly declare
@@ -73,7 +87,19 @@ manual-assumption / “参数直接输入、未经试验标定”. Packages with
 data retain its source checksum and conversion factors; merely attaching data
 does not claim that calibration was completed.
 
-The v2 package preserves two axial terminals, nested explicit Series/Parallel groups,
+The toolbar publishes a **v3 editable Assembly2D component package**. Import it
+through SA's **支撑体系 → 导入支撑模型**, then open **材料与构造** to edit it in
+**支撑构件工作台**. Collinear series beam/truss segments and parallel link branches
+retain their geometry, material response types, independent states and MinMax
+limits. Steel02 retains its optional a1–a4 and sigInit parameters. Unsupported
+graphs or connections report the specific reason instead of changing the model.
+Source input/result checksums and available curves are retained. The source test
+fixture supports are recorded in the input snapshot; installation ports connect
+to the SA frame. Internal guided axial or continuous planar connections must be
+uniform and are explicitly declared in the component. The SA kernel validates
+the exported definition before the save dialog opens.
+
+The existing v2 API preserves two axial terminals, nested explicit Series/Parallel groups,
 supported material laws (Elastic, Steel01, Steel02, SelfCentering and MinMax wrappers), original
 curves, and input/result SHA-256 values. Topology groups become explicit branch elements
 and massless internal coordinates in Structural analysis; they are not silently replaced

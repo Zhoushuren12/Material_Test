@@ -365,6 +365,7 @@ class ProjectSessionMixin:
             self.set_baseline_button.setEnabled(False)
             self.export_button.setEnabled(False)
             self.publish_button.setEnabled(False)
+            self.publish_brace_action.setEnabled(False)
             self._set_status(reason + ' · 待重新计算', 'stale')
         else:
             self._set_status('等待计算当前模型')
